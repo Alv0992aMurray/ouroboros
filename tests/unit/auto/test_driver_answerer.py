@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import pytest
 
-from ouroboros.auto.answerer import AutoAnswerSource
+from ouroboros.auto.answerer import AutoAnswerContext, AutoAnswerSource
 from ouroboros.auto.driver_answerer import DriverAutoAnswerer, classify_interview_answer_risk
-from ouroboros.auto.ledger import SeedDraftLedger
+from ouroboros.auto.ledger import LedgerStatus, SeedDraftLedger
 from ouroboros.auto.state import AutoBrakeMode
 from ouroboros.core.types import Result
 from ouroboros.providers.base import CompletionResponse, UsageInfo
@@ -50,6 +50,60 @@ async def test_driver_answerer_brake_off_answers_risky_question() -> None:
     assert "brake=off" in answer.text
     assert "risk=" in answer.text
     assert adapter.prompts
+
+
+@pytest.mark.asyncio
+async def test_driver_answerer_ledger_updates_mirror_driver_answer() -> None:
+    ledger = SeedDraftLedger.from_goal("Build a CLI")
+    adapter = FakeAdapter("Use Typer and verify with pytest.")
+    answerer = DriverAutoAnswerer(backend="codex", brake=AutoBrakeMode.OFF, adapter=adapter)
+
+    answer = await answerer.answer("Which runtime and framework should be used?", ledger)
+
+    assert answer.ledger_updates
+    assert all(entry.value == answer.text for _section, entry in answer.ledger_updates)
+    assert {entry.source.value for _section, entry in answer.ledger_updates} == {"inference"}
+    assert any("driver:codex" in entry.evidence for _section, entry in answer.ledger_updates)
+
+
+@pytest.mark.asyncio
+async def test_driver_answerer_preserves_confirmed_scaffold_status() -> None:
+    ledger = SeedDraftLedger.from_goal("Build a CLI")
+    context = AutoAnswerContext(
+        repo_facts={"runtime_context": "Python package managed by uv"},
+        evidence={"runtime_context": ["pyproject.toml"]},
+    )
+    adapter = FakeAdapter("Use the existing Python/uv runtime.")
+    answerer = DriverAutoAnswerer(backend="codex", brake=AutoBrakeMode.OFF, adapter=adapter)
+
+    answer = await answerer.answer("Which runtime and framework should be used?", ledger, context)
+
+    runtime_updates = [
+        entry for section, entry in answer.ledger_updates if section == "runtime_context"
+    ]
+    assert runtime_updates
+    assert any(entry.status is LedgerStatus.CONFIRMED for entry in runtime_updates)
+
+
+@pytest.mark.asyncio
+async def test_driver_answerer_constructs_adapter_with_session_cwd(monkeypatch, tmp_path) -> None:
+    from ouroboros.auto import driver_answerer as module
+
+    captured: dict[str, object] = {}
+    adapter = FakeAdapter("Use the checked-out project conventions.")
+
+    def fake_create_llm_adapter(**kwargs):  # noqa: ANN003, ANN202
+        captured.update(kwargs)
+        return adapter
+
+    monkeypatch.setattr(module, "create_llm_adapter", fake_create_llm_adapter)
+    ledger = SeedDraftLedger.from_goal("Build a CLI")
+    answerer = DriverAutoAnswerer(backend="codex", brake=AutoBrakeMode.OFF, cwd=tmp_path)
+
+    answer = await answerer.answer("Which runtime and framework should be used?", ledger)
+
+    assert answer.source == AutoAnswerSource.DRIVER
+    assert captured["cwd"] == tmp_path
 
 
 @pytest.mark.asyncio
