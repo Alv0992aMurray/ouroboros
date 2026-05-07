@@ -154,11 +154,15 @@ async def test_ralph_handler_returns_job_id_and_completes_loop() -> None:
         job_id = started.value.meta["job_id"]
         assert job_id.startswith("job_")
 
+        # Await the manager-owned wrapper task instead of polling the event store.
+        # Under full-suite Python 3.14 CI load, store polling can repeatedly observe
+        # the intermediate RUNNING event while the background wrapper has not yet
+        # been scheduled to append the terminal event.  Waiting for the wrapper keeps
+        # the test focused on the job contract without making scheduler latency part
+        # of the assertion.
+        manager_task = job_manager._tasks[job_id]  # pyright: ignore[reportPrivateUsage]
+        await asyncio.wait_for(manager_task, timeout=30.0)
         snapshot = await job_manager.get_snapshot(job_id)
-        deadline = asyncio.get_running_loop().time() + 30.0
-        while not snapshot.is_terminal and asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.05)
-            snapshot = await job_manager.get_snapshot(job_id)
         assert snapshot.status is JobStatus.COMPLETED
         assert snapshot.result_meta["iterations"] == 2
         assert snapshot.result_meta["actions"] == ["continue", "converged"]
