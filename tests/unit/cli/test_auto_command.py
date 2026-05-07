@@ -330,6 +330,57 @@ def test_resume_applies_requested_driver_and_brake_for_legacy_session(tmp_path) 
     }
 
 
+def test_resume_legacy_driver_adoption_does_not_inherit_brake_only_state(tmp_path) -> None:
+    """Driver adoption defaults to brake=on when legacy state had no driver contract."""
+    import asyncio
+
+    from ouroboros.auto.state import AutoBrakeMode
+    from ouroboros.cli.commands.auto import _run_auto
+
+    state, store, session_id = _persisted_state_with_bounds(
+        tmp_path, max_interview_rounds=2, max_repair_rounds=1
+    )
+    state.interview_driver_backend = None
+    state.brake = AutoBrakeMode.OFF
+    store.save(state)
+    captured: dict[str, str | None] = {}
+
+    async def fake_pipeline_run(self, state):  # noqa: ARG001
+        captured["driver"] = state.interview_driver_backend
+        captured["brake"] = state.brake.value
+        captured["answerer_backend"] = self.interview_driver.answerer.backend
+        captured["answerer_brake"] = self.interview_driver.answerer.brake.value
+        return AutoPipelineResult(
+            status="complete",
+            auto_session_id=session_id,
+            phase="complete",
+            grade="A",
+        )
+
+    with (
+        patch("ouroboros.cli.commands.auto.AutoStore") as store_cls,
+        patch("ouroboros.cli.commands.auto.AutoPipeline.run", new=fake_pipeline_run),
+    ):
+        store_cls.return_value = store
+        result = asyncio.run(
+            _run_auto(
+                goal=None,
+                resume=session_id,
+                runtime=None,
+                driver="codex",
+                skip_run=False,
+            )
+        )
+
+    assert result.status == "complete"
+    assert captured == {
+        "driver": "codex",
+        "brake": "on",
+        "answerer_backend": "codex",
+        "answerer_brake": "on",
+    }
+
+
 def test_resume_rejects_brake_mismatch(tmp_path) -> None:
     """Changing brake mode on resume must be explicit session mismatch, not silent mutation."""
     import asyncio

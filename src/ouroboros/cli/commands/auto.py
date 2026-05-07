@@ -234,7 +234,12 @@ async def _run_auto(
             )
             raise ValueError(msg)
         driver = requested_driver or persisted_driver
-        brake_mode = AutoBrakeMode(brake or state.brake.value)
+        brake_default = (
+            AutoBrakeMode.ON.value
+            if persisted_driver is None and requested_driver is not None
+            else state.brake.value
+        )
+        brake_mode = AutoBrakeMode(brake or brake_default)
         if brake is not None and persisted_driver is not None and brake_mode != state.brake:
             msg = (
                 f"resume brake mismatch: session uses {state.brake.value}, "
@@ -242,7 +247,7 @@ async def _run_auto(
             )
             raise ValueError(msg)
         state.interview_driver_backend = driver
-        state.brake = brake_mode
+        state.brake = brake_mode if driver is not None else AutoBrakeMode.ON
     else:
         if goal is None or not goal.strip():
             raise ValueError("goal is required when not resuming")
@@ -254,7 +259,11 @@ async def _run_auto(
         state = AutoPipelineState(goal=goal.strip(), cwd=str(_safe_default_cwd()))
         state.runtime_backend = runtime
         state.interview_driver_backend = requested_driver
-        state.brake = AutoBrakeMode(brake or AutoBrakeMode.ON.value)
+        state.brake = (
+            AutoBrakeMode(brake or AutoBrakeMode.ON.value)
+            if requested_driver is not None
+            else AutoBrakeMode.ON
+        )
         state.skip_run = skip_run
         state.max_interview_rounds = max_interview_rounds
         state.max_repair_rounds = max_repair_rounds

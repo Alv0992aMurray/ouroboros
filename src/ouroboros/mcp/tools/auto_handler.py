@@ -170,8 +170,12 @@ class AutoHandler:
                     f"resume brake mismatch: session uses {state.brake.value}, "
                     f"but brake {requested_brake_mode.value} was requested"
                 )
-            if requested_brake_mode is not None:
+            if requested_brake_mode is not None and state.interview_driver_backend is not None:
                 state.brake = requested_brake_mode
+            elif persisted_driver is None and (
+                requested_driver is not None or state.interview_driver_backend is None
+            ):
+                state.brake = AutoBrakeMode.ON
         else:
             goal = arguments.get("goal")
             if not isinstance(goal, str) or not goal.strip():
@@ -186,7 +190,11 @@ class AutoHandler:
             state.max_interview_rounds = max_interview_rounds
             state.max_repair_rounds = max_repair_rounds
             state.interview_driver_backend = requested_driver
-            state.brake = requested_brake_mode or AutoBrakeMode.ON
+            state.brake = (
+                (requested_brake_mode or AutoBrakeMode.ON)
+                if requested_driver is not None
+                else AutoBrakeMode.ON
+            )
         state.runtime_backend = runtime_backend
         state.opencode_mode = opencode_mode
         state.skip_run = skip_run
