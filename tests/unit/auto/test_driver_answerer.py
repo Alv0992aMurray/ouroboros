@@ -162,6 +162,13 @@ def test_driver_text_rejects_negated_existing_stack_contract() -> None:
     )
 
 
+def test_driver_text_rejects_negated_ordinary_contract() -> None:
+    assert not _driver_text_supports_entry(
+        "External services are not out of scope.",
+        "External services are out of scope.",
+    )
+
+
 @pytest.mark.asyncio
 async def test_driver_answerer_keeps_unsupported_scaffold_contract_open() -> None:
     ledger = SeedDraftLedger.from_goal("Build a CLI")

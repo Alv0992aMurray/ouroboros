@@ -388,6 +388,8 @@ def _driver_text_supports_entry(driver_text: str, scaffold_value: str) -> bool:
     driver_tokens = _support_tokens(driver_text)
     if not driver_tokens or _has_support_conflict(scaffold_tokens, driver_tokens):
         return False
+    if _has_negated_contract_conflict(driver_text, scaffold_value, scaffold_tokens):
+        return False
     if _is_existing_contract_scaffold(scaffold_tokens) and _driver_rejects_existing_contract(
         driver_text
     ):
@@ -426,6 +428,41 @@ def _has_support_conflict(scaffold_tokens: set[str], driver_tokens: set[str]) ->
         if scaffold_terms and driver_terms and scaffold_terms.isdisjoint(driver_terms):
             return True
     return False
+
+
+def _has_negated_contract_conflict(
+    driver_text: str, scaffold_value: str, scaffold_tokens: set[str]
+) -> bool:
+    """Return True when the driver negates the scaffold's visible contract.
+
+    Token overlap is not enough when the driver inserts negation around the
+    same terms (for example, "not out of scope" vs "out of scope").  Treat
+    these as unsupported so the ledger stays open instead of preserving the
+    opposite contract.
+    """
+    normalized_driver = " ".join(driver_text.lower().split())
+    normalized_scaffold = " ".join(scaffold_value.lower().split())
+    if _contains_negation(normalized_scaffold):
+        return False
+    if "out of scope" in normalized_scaffold and re.search(
+        r"\b(?:not|never)\b(?:\s+\w+){0,3}\s+out\s+of\s+scope\b",
+        normalized_driver,
+    ):
+        return True
+
+    driver_tokens = re.findall(r"[a-z0-9]+", normalized_driver)
+    negation_terms = {"not", "never", "no", "without", "avoid", "ignore", "dont", "don't"}
+    for index, token in enumerate(driver_tokens):
+        if token not in negation_terms:
+            continue
+        window = set(driver_tokens[max(0, index - 4) : index + 6])
+        if len(window & scaffold_tokens) >= 2:
+            return True
+    return False
+
+
+def _contains_negation(value: str) -> bool:
+    return bool(re.search(r"\b(?:do\s+not|don't|dont|not|never|no|without|avoid|ignore)\b", value))
 
 
 def _is_existing_contract_scaffold(scaffold_tokens: set[str]) -> bool:
