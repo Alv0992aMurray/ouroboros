@@ -861,6 +861,26 @@ class TestHermesCliRuntime:
         assert messages[0].resume_handle.native_session_id == "20260413_120000_deadbeef"
 
     @pytest.mark.asyncio
+    async def test_execute_task_maps_bypass_permission_mode_to_yolo_flag(self) -> None:
+        runtime = HermesCliRuntime(
+            cli_path="hermes",
+            cwd="/tmp/project",
+            permission_mode="bypassPermissions",
+        )
+        process = _FakeProcess("Finished work\nsession_id: 20260413_120000_deadbeef\n")
+
+        with patch(
+            "ouroboros.orchestrator.hermes_runtime.asyncio.create_subprocess_exec",
+            return_value=process,
+        ) as mock_exec:
+            messages = [message async for message in runtime.execute_task("Do the thing")]
+
+        args = mock_exec.call_args.args
+        assert "--yolo" in args
+        assert args.index("--yolo") < args.index("-q")
+        assert messages[0].content == "Finished work"
+
+    @pytest.mark.asyncio
     async def test_execute_task_falls_through_on_recoverable_dispatch_failure(
         self,
         tmp_path: Path,

@@ -101,6 +101,18 @@ class TestCreateLLMAdapter:
         assert isinstance(adapter, HermesCliLLMAdapter)
         assert adapter._cli_path == "/missing/hermes"
 
+    def test_forwards_interview_permission_mode_to_hermes_adapter(self) -> None:
+        """Hermes interview adapters must honor the bypass permission contract."""
+        adapter = create_llm_adapter(
+            backend="hermes",
+            cli_path="/missing/hermes",
+            use_case="interview",
+        )
+
+        assert isinstance(adapter, HermesCliLLMAdapter)
+        assert adapter._permission_mode == "bypassPermissions"
+        assert adapter._runtime.permission_mode == "bypassPermissions"
+
     def test_forwards_io_recorder_to_litellm_adapter(self) -> None:
         """LiteLLM factory path preserves explicit recorder wiring."""
         recorder = IOJournalRecorder(
@@ -296,6 +308,13 @@ class TestResolveLLMPermissionMode:
         """Interview needs bypassPermissions for OpenCode — read-only sandbox blocks LLM output."""
         assert (
             resolve_llm_permission_mode(backend="opencode", use_case="interview")
+            == "bypassPermissions"
+        )
+
+    def test_interview_mode_escalates_to_bypass_for_hermes(self) -> None:
+        """Interview needs bypassPermissions for Hermes so the CLI cannot prompt/block."""
+        assert (
+            resolve_llm_permission_mode(backend="hermes", use_case="interview")
             == "bypassPermissions"
         )
 

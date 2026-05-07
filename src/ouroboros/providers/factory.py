@@ -222,6 +222,7 @@ def create_llm_adapter(
         return HermesCliLLMAdapter(
             cli_path=cli_path or get_hermes_cli_path(),
             cwd=cwd,
+            permission_mode=resolved_permission_mode,
             timeout=timeout,
         )
     if resolved_backend == "opencode":

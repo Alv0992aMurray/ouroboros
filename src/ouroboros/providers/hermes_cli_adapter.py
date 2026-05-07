@@ -26,6 +26,7 @@ class HermesCliLLMAdapter:
         cli_path: str | Path | None = None,
         cwd: str | Path | None = None,
         model: str | None = None,
+        permission_mode: str | None = None,
         timeout: float | None = None,
     ) -> None:
         from ouroboros.orchestrator.hermes_runtime import HermesCliRuntime
@@ -34,11 +35,13 @@ class HermesCliLLMAdapter:
             cli_path=cli_path,
             cwd=cwd,
             model=model,
+            permission_mode=permission_mode,
             startup_output_timeout_seconds=timeout,
             stdout_idle_timeout_seconds=timeout,
         )
         self._cli_path = self._runtime._cli_path
         self._cwd = self._runtime.working_directory
+        self._permission_mode = self._runtime.permission_mode
 
     async def complete(
         self,

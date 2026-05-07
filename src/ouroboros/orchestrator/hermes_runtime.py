@@ -468,6 +468,9 @@ class HermesCliRuntime(AgentRuntime):
         if self._model:
             args.extend(["--model", self._model])
 
+        if self._permission_mode == "bypassPermissions":
+            args.append("--yolo")
+
         args.extend(["-q", full_prompt])
 
         process = await asyncio.create_subprocess_exec(
