@@ -4,6 +4,7 @@ import asyncio
 
 import pytest
 
+from ouroboros.auto.answerer import AutoAnswer, AutoAnswerContext, AutoAnswerSource
 from ouroboros.auto.grading import GradeResult, SeedGrade
 from ouroboros.auto.interview_driver import (
     AutoInterviewDriver,
@@ -235,6 +236,62 @@ async def test_interview_driver_blocks_after_max_rounds_with_open_gaps(tmp_path)
     assert result.status == "blocked"
     assert state.phase == AutoPhase.BLOCKED
     assert "unresolved gaps" in (result.blocker or "")
+
+
+@pytest.mark.asyncio
+async def test_interview_driver_awaits_async_answerer_and_applies_result(tmp_path) -> None:
+    class AsyncAnswerer:
+        def __init__(self) -> None:
+            self.answer_called = False
+            self.apply_called = False
+
+        async def answer(
+            self,
+            question: str,
+            ledger: SeedDraftLedger,
+            context: AutoAnswerContext | None = None,
+        ) -> AutoAnswer:
+            self.answer_called = True
+            assert question == "Which behavior should be verified?"
+            assert context is not None
+            return AutoAnswer(
+                text="Use command-level tests.",
+                source=AutoAnswerSource.DRIVER,
+                confidence=0.9,
+            )
+
+        def apply(self, answer: AutoAnswer, ledger: SeedDraftLedger, *, question: str) -> None:
+            self.apply_called = True
+            assert answer.source is AutoAnswerSource.DRIVER
+            assert question == "Which behavior should be verified?"
+            _fill_ready(ledger)
+
+    async def start(goal: str, cwd: str) -> InterviewTurn:  # noqa: ARG001
+        return InterviewTurn("Which behavior should be verified?", "interview_1")
+
+    async def answer(session_id: str, text: str) -> InterviewTurn:
+        assert session_id == "interview_1"
+        assert "[from-auto][driver]" in text
+        assert "Use command-level tests." in text
+        return InterviewTurn("done", session_id, seed_ready=True)
+
+    state = AutoPipelineState(goal="Build a CLI", cwd=str(tmp_path))
+    ledger = SeedDraftLedger.from_goal(state.goal)
+    answerer = AsyncAnswerer()
+    driver = AutoInterviewDriver(
+        FunctionInterviewBackend(start, answer),
+        answerer=answerer,  # type: ignore[arg-type]
+        store=AutoStore(tmp_path),
+        max_rounds=1,
+        timeout_seconds=1,
+    )
+
+    result = await driver.run(state, ledger)
+
+    assert result.status == "seed_ready"
+    assert answerer.answer_called
+    assert answerer.apply_called
+    assert state.current_round == 1
 
 
 @pytest.mark.asyncio
