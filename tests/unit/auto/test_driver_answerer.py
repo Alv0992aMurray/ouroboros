@@ -155,6 +155,13 @@ def test_driver_text_supports_existing_stack_paraphrase() -> None:
     )
 
 
+def test_driver_text_rejects_negated_existing_stack_contract() -> None:
+    assert not _driver_text_supports_entry(
+        "Do not follow the repo's current stack; use Rust and Cargo instead.",
+        "Existing repository runtime, package manager, and architectural patterns.",
+    )
+
+
 @pytest.mark.asyncio
 async def test_driver_answerer_keeps_unsupported_scaffold_contract_open() -> None:
     ledger = SeedDraftLedger.from_goal("Build a CLI")

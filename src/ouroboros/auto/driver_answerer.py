@@ -388,6 +388,10 @@ def _driver_text_supports_entry(driver_text: str, scaffold_value: str) -> bool:
     driver_tokens = _support_tokens(driver_text)
     if not driver_tokens or _has_support_conflict(scaffold_tokens, driver_tokens):
         return False
+    if _is_existing_contract_scaffold(scaffold_tokens) and _driver_rejects_existing_contract(
+        driver_text
+    ):
+        return False
 
     expanded_driver_tokens = _expand_support_tokens(driver_tokens)
     if scaffold_tokens <= expanded_driver_tokens:
@@ -424,10 +428,24 @@ def _has_support_conflict(scaffold_tokens: set[str], driver_tokens: set[str]) ->
     return False
 
 
+def _is_existing_contract_scaffold(scaffold_tokens: set[str]) -> bool:
+    return bool(scaffold_tokens & _SCAFFOLD_CONTRACT_TOKENS)
+
+
+def _driver_rejects_existing_contract(driver_text: str) -> bool:
+    normalized = " ".join(driver_text.lower().split())
+    contract_terms = r"(?:repo(?:sitory)?|current|existing|stack|conventions?|patterns?)"
+    negations = r"(?:do not|don't|dont|not|avoid|ignore|instead of|rather than)"
+    return bool(
+        re.search(rf"{negations}[^.!?;]{{0,80}}{contract_terms}", normalized)
+        or re.search(rf"{contract_terms}[^.!?;]{{0,80}}{negations}", normalized)
+    )
+
+
 def _driver_affirms_existing_contract(
     scaffold_tokens: set[str], expanded_driver_tokens: set[str]
 ) -> bool:
-    return bool(scaffold_tokens & _SCAFFOLD_CONTRACT_TOKENS) and bool(
+    return _is_existing_contract_scaffold(scaffold_tokens) and bool(
         expanded_driver_tokens & _EXISTING_CONTRACT_TOKENS
     )
 
