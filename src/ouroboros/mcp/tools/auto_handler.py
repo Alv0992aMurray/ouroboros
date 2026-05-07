@@ -151,20 +151,27 @@ class AutoHandler:
             max_interview_rounds = state.max_interview_rounds
             max_repair_rounds = state.max_repair_rounds
             skip_run = requested_skip_run or state.skip_run
-            if requested_driver is not None and state.interview_driver_backend not in {
+            persisted_driver = state.interview_driver_backend
+            if requested_driver is not None and persisted_driver not in {
                 None,
                 requested_driver,
             }:
                 raise ValueError(
-                    f"resume driver mismatch: session uses {state.interview_driver_backend}, "
+                    f"resume driver mismatch: session uses {persisted_driver}, "
                     f"but driver {requested_driver} was requested"
                 )
-            state.interview_driver_backend = requested_driver or state.interview_driver_backend
-            if requested_brake_mode is not None and requested_brake_mode != state.brake:
+            state.interview_driver_backend = requested_driver or persisted_driver
+            if (
+                requested_brake_mode is not None
+                and persisted_driver is not None
+                and requested_brake_mode != state.brake
+            ):
                 raise ValueError(
                     f"resume brake mismatch: session uses {state.brake.value}, "
                     f"but brake {requested_brake_mode.value} was requested"
                 )
+            if requested_brake_mode is not None:
+                state.brake = requested_brake_mode
         else:
             goal = arguments.get("goal")
             if not isinstance(goal, str) or not goal.strip():

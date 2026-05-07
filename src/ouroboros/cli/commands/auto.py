@@ -223,24 +223,26 @@ async def _run_auto(
         else:
             state.max_repair_rounds = max_repair_rounds
         skip_run = skip_run or state.skip_run
-        if requested_driver is not None and state.interview_driver_backend not in {
+        persisted_driver = state.interview_driver_backend
+        if requested_driver is not None and persisted_driver not in {
             None,
             requested_driver,
         }:
             msg = (
-                f"resume driver mismatch: session uses {state.interview_driver_backend}, "
+                f"resume driver mismatch: session uses {persisted_driver}, "
                 f"but --driver {requested_driver} was requested"
             )
             raise ValueError(msg)
-        driver = requested_driver or state.interview_driver_backend
+        driver = requested_driver or persisted_driver
         brake_mode = AutoBrakeMode(brake or state.brake.value)
-        if brake is not None and brake_mode != state.brake:
+        if brake is not None and persisted_driver is not None and brake_mode != state.brake:
             msg = (
                 f"resume brake mismatch: session uses {state.brake.value}, "
                 f"but --brake {brake_mode.value} was requested"
             )
             raise ValueError(msg)
         state.interview_driver_backend = driver
+        state.brake = brake_mode
     else:
         if goal is None or not goal.strip():
             raise ValueError("goal is required when not resuming")
