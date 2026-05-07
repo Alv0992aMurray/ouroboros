@@ -42,6 +42,12 @@ class AutoPipelineResult:
     last_grade: str | None = None
     run_handoff_status: str | None = None
     run_handoff_guidance: str | None = None
+    attached_run_handle: str | None = None
+    attached_run_source: str | None = None
+    attached_at: str | None = None
+    run_reconciliation_status: str | None = None
+    run_reconciliation_source: str | None = None
+    run_reconciled_at: str | None = None
     assumptions: tuple[str, ...] = ()
     non_goals: tuple[str, ...] = ()
     blocker: str | None = None
@@ -61,6 +67,12 @@ class AutoPipeline:
     seed_saver: SeedSaver | None = None
     seed_loader: SeedLoader | None = None
     skip_run: bool = False
+    attach_execution_id: str | None = None
+    attach_job_id: str | None = None
+    attach_run_session_id: str | None = None
+    attach_source: str | None = None
+    reconcile_run: bool = False
+    reconcile_source: str | None = None
     seed_timeout_seconds: float = 120.0
     run_start_timeout_seconds: float = 60.0
 
@@ -83,6 +95,21 @@ class AutoPipeline:
                 return self._result(state, ledger, blocker=state.last_error)
         self._save(state)
 
+        if self.reconcile_run and state.phase == AutoPhase.COMPLETE:
+            reconciled, transient_blocker = self._reconcile_run_if_requested(state)
+            if reconciled is not None:
+                self._save(state)
+                if reconciled is False:
+                    blocker = transient_blocker or state.last_error
+                else:
+                    blocker = None
+                status_override = "blocked" if reconciled is False else None
+                return self._result(
+                    state,
+                    ledger,
+                    blocker=blocker,
+                    status_override=status_override,
+                )
         if state.phase == AutoPhase.COMPLETE:
             return self._result(state, ledger, blocker=state.last_error)
         if state.phase in {AutoPhase.BLOCKED, AutoPhase.FAILED}:
@@ -257,6 +284,15 @@ class AutoPipeline:
                 return self._result(state, ledger, review=review)
 
         if state.phase == AutoPhase.RUN:
+            attached = self._attach_run_if_requested(state)
+            if attached is not None:
+                self._save(state)
+                return self._result(state, ledger, review=review)
+            reconciled, transient_blocker = self._reconcile_run_if_requested(state)
+            if reconciled is not None:
+                self._save(state)
+                blocker = transient_blocker or state.last_error
+                return self._result(state, ledger, review=review, blocker=blocker)
             if any((state.job_id, state.execution_id, state.run_session_id)):
                 state.run_handoff_status = "started"
                 state.run_handoff_guidance = None
@@ -383,9 +419,10 @@ class AutoPipeline:
         review: SeedReview | None = None,
         blocker: str | None = None,
         run_subagent: dict[str, Any] | None = None,
+        status_override: str | None = None,
     ) -> AutoPipelineResult:
         return AutoPipelineResult(
-            status=state.phase.value,
+            status=status_override or state.phase.value,
             auto_session_id=state.auto_session_id,
             phase=state.phase.value,
             grade=review.grade_result.grade.value if review else state.last_grade,
@@ -402,10 +439,122 @@ class AutoPipeline:
             last_grade=state.last_grade,
             run_handoff_status=state.run_handoff_status,
             run_handoff_guidance=state.run_handoff_guidance,
+            attached_run_handle=state.attached_run_handle,
+            attached_run_source=state.attached_run_source,
+            attached_at=state.attached_at,
+            run_reconciliation_status=state.run_reconciliation_status,
+            run_reconciliation_source=state.run_reconciliation_source,
+            run_reconciled_at=state.run_reconciled_at,
             assumptions=tuple(ledger.assumptions()),
             non_goals=tuple(ledger.non_goals()),
             blocker=blocker or state.last_error,
         )
+
+    def _attach_run_if_requested(self, state: AutoPipelineState) -> bool | None:
+        handle = _first_nonempty(
+            self.attach_execution_id, self.attach_job_id, self.attach_run_session_id
+        )
+        if handle is None:
+            return None
+        if not state.run_start_attempted or state.run_handoff_status not in {
+            "unknown_no_handle",
+            "unknown_timeout",
+        }:
+            msg = (
+                "Attach requires an auto session with unknown run handoff status "
+                "after a prior run start attempt"
+            )
+            state.mark_blocked(msg, tool_name="run_starter")
+            return False
+        state.execution_id = _optional_str(self.attach_execution_id)
+        state.job_id = _optional_str(self.attach_job_id)
+        state.run_session_id = _optional_str(self.attach_run_session_id)
+        state.attached_run_handle = handle
+        state.attached_run_source = _optional_str(self.attach_source) or "manual"
+        state.attached_at = utc_now_iso()
+        state.run_handoff_status = "attached"
+        state.run_handoff_guidance = (
+            "Attached an externally verified execution handle to this auto session; "
+            "resume will use the attached handle and will not start a duplicate run."
+        )
+        # Successful attach supersedes any prior reconciliation outcome on the
+        # same unknown handoff, so clear stale reconciliation metadata to avoid
+        # surfacing contradictory state (attached + previous reconciliation failure).
+        state.run_reconciliation_status = None
+        state.run_reconciliation_source = None
+        state.run_reconciled_at = None
+        state.transition(AutoPhase.COMPLETE, "attached existing execution handle")
+        return True
+
+    def _reconcile_run_if_requested(
+        self, state: AutoPipelineState
+    ) -> tuple[bool | None, str | None]:
+        """Run the generic reconciliation contract.
+
+        Returns ``(outcome, transient_blocker)``:
+
+        - ``outcome`` is ``None`` when reconcile was not requested, ``True`` for
+          a successful reconciliation, and ``False`` when the request fails.
+        - ``transient_blocker`` carries an invocation-only error message that
+          must be surfaced to the caller for the current call only. It is used
+          for failure paths (notably invalid-context against a terminal complete
+          session) where mutating ``state.last_error`` durably would leak the
+          error into every later plain ``--resume``/``--status`` response.
+        """
+        if not self.reconcile_run:
+            return None, None
+        if state.run_handoff_status == "attached" and state.attached_run_handle:
+            state.run_reconciliation_status = "attached"
+            state.run_reconciliation_source = _optional_str(self.reconcile_source) or "attached_run"
+            state.run_reconciled_at = utc_now_iso()
+            state.run_handoff_guidance = (
+                "Reconciliation confirmed the session already has an attached run handle; "
+                "resume will not start a duplicate run."
+            )
+            if state.phase == AutoPhase.COMPLETE:
+                state.mark_progress(
+                    "reconciled existing attached execution handle",
+                    tool_name="run_starter",
+                )
+            else:
+                state.transition(
+                    AutoPhase.COMPLETE, "reconciled existing attached execution handle"
+                )
+            return True, None
+        if not state.run_start_attempted or state.run_handoff_status not in {
+            "unknown_no_handle",
+            "unknown_timeout",
+        }:
+            msg = (
+                "Reconciliation requires an auto session with unknown run handoff "
+                "status after a prior run start attempt"
+            )
+            state.run_reconciliation_status = "invalid_context"
+            state.run_reconciliation_source = _optional_str(self.reconcile_source) or "generic"
+            state.run_reconciled_at = utc_now_iso()
+            state.run_handoff_guidance = msg
+            if state.phase == AutoPhase.COMPLETE:
+                # Keep the terminal phase intact and avoid corrupting durable
+                # state.last_error: future plain --resume/--status calls must
+                # not report this per-invocation misuse as a steady-state
+                # blocker. The message is returned as a transient blocker so
+                # the current call still surfaces it via the result.
+                state.last_tool_name = "run_starter"
+                state.mark_progress(msg, tool_name="run_starter")
+                return False, msg
+            state.mark_blocked(msg, tool_name="run_starter")
+            return False, None
+        state.run_reconciliation_status = "unsupported"
+        state.run_reconciliation_source = _optional_str(self.reconcile_source) or "generic"
+        state.run_reconciled_at = utc_now_iso()
+        state.run_handoff_guidance = (
+            "Generic reconciliation has no runtime-specific discovery adapter for this "
+            "unknown handoff. No duplicate run was started. Attach a verified execution, "
+            "job, or run session handle, or add a runtime-specific reconciler that returns "
+            "attached, not_found, ambiguous, or unsupported."
+        )
+        state.mark_blocked(state.run_handoff_guidance, tool_name="run_starter")
+        return False, None
 
     def _save(self, state: AutoPipelineState) -> None:
         if self.store is not None:
@@ -476,5 +625,13 @@ def _recoverable_phase_for_tool(tool_name: str | None) -> AutoPhase | None:
     return None
 
 
+def _first_nonempty(*values: str | None) -> str | None:
+    for value in values:
+        normalized = _optional_str(value)
+        if normalized is not None:
+            return normalized
+    return None
+
+
 def _optional_str(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
+    return value.strip() if isinstance(value, str) and value.strip() else None

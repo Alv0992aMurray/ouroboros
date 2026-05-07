@@ -1227,6 +1227,84 @@ async def test_auto_handler_rejects_zero_loop_bounds() -> None:
         assert ">= 1" in str(result.error)
 
 
+def test_auto_state_loads_legacy_sessions_without_attached_run_fields() -> None:
+    from ouroboros.auto.state import AutoPipelineState
+
+    payload = AutoPipelineState(goal="Build a CLI", cwd="/repo").to_dict()
+    payload.pop("attached_run_handle")
+    payload.pop("attached_run_source")
+    payload.pop("attached_at")
+    payload.pop("run_reconciliation_status")
+    payload.pop("run_reconciliation_source")
+    payload.pop("run_reconciled_at")
+
+    restored = AutoPipelineState.from_dict(payload)
+
+    assert restored.attached_run_handle is None
+    assert restored.attached_run_source is None
+    assert restored.attached_at is None
+    assert restored.run_reconciliation_status is None
+    assert restored.run_reconciliation_source is None
+    assert restored.run_reconciled_at is None
+
+
+def test_auto_handler_definition_exposes_attach_arguments() -> None:
+    names = {param.name for param in AutoHandler().definition.parameters}
+
+    assert {
+        "attach_execution",
+        "attach_job",
+        "attach_session",
+        "attach_source",
+        "reconcile_run",
+        "reconcile_source",
+    } <= names
+
+
+def test_auto_handler_meta_exposes_attached_run_fields() -> None:
+    from ouroboros.auto.pipeline import AutoPipelineResult
+    from ouroboros.mcp.tools.auto_handler import _result_meta
+
+    meta = _result_meta(
+        AutoPipelineResult(
+            status="complete",
+            auto_session_id="auto_test",
+            phase="complete",
+            execution_id="exec_existing",
+            run_handoff_status="attached",
+            attached_run_handle="exec_existing",
+            attached_run_source="operator",
+            attached_at="2026-05-07T00:00:00+00:00",
+        )
+    )
+
+    assert meta["run_handoff_status"] == "attached"
+    assert meta["attached_run_handle"] == "exec_existing"
+    assert meta["attached_run_source"] == "operator"
+    assert meta["attached_at"] == "2026-05-07T00:00:00+00:00"
+
+
+def test_auto_handler_meta_exposes_run_reconciliation_fields() -> None:
+    from ouroboros.auto.pipeline import AutoPipelineResult
+    from ouroboros.mcp.tools.auto_handler import _result_meta
+
+    meta = _result_meta(
+        AutoPipelineResult(
+            status="blocked",
+            auto_session_id="auto_test",
+            phase="blocked",
+            run_handoff_status="unknown_no_handle",
+            run_reconciliation_status="unsupported",
+            run_reconciliation_source="generic",
+            run_reconciled_at="2026-05-07T00:00:00+00:00",
+        )
+    )
+
+    assert meta["run_reconciliation_status"] == "unsupported"
+    assert meta["run_reconciliation_source"] == "generic"
+    assert meta["run_reconciled_at"] == "2026-05-07T00:00:00+00:00"
+
+
 @pytest.mark.asyncio
 async def test_auto_handler_passes_state_interview_timeout_to_driver(monkeypatch, tmp_path) -> None:
     """Regression for #686: MCP entrypoint must wire state interview timeout into driver."""
