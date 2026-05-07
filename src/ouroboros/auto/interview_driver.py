@@ -19,6 +19,7 @@ from ouroboros.auto.answerer import (
     AutoAnswerSource,
     AutoBlocker,
 )
+from ouroboros.auto.blocker_attribution import record_authoring_backend
 from ouroboros.auto.gap_detector import Gap, GapDetector
 from ouroboros.auto.ledger import LedgerStatus, SeedDraftLedger
 from ouroboros.auto.progress import AutoProgressCallback, AutoProgressEvent
@@ -164,16 +165,19 @@ class AutoInterviewDriver:
                 self._save(state)
         except TimeoutError as exc:
             self._record_evidence_based_session_id(state, exc, preassigned_id)
-            state.mark_blocked(str(exc), tool_name=interview_tool_name)
+            message = str(exc)
+            state.mark_blocked(message, tool_name=interview_tool_name)
+            record_authoring_backend(state)
             self._save(state)
             return AutoInterviewResult(
-                "blocked", state.interview_session_id, ledger, state.current_round, str(exc)
+                "blocked", state.interview_session_id, ledger, state.current_round, message
             )
         except Exception as exc:
             self._record_evidence_based_session_id(state, exc, preassigned_id)
             action = "resume" if interview_tool_name == "interview.resume" else "start"
             blocker = f"interview {action} failed: {exc}"
             state.mark_blocked(blocker, tool_name=interview_tool_name)
+            record_authoring_backend(state)
             self._save(state)
             return AutoInterviewResult(
                 "blocked", state.interview_session_id, ledger, state.current_round, blocker
@@ -190,14 +194,16 @@ class AutoInterviewDriver:
             if answer.blocker is not None:
                 self.answerer.apply(answer, ledger, question=turn.question)
                 state.ledger = ledger.to_dict()
-                state.mark_blocked(answer.blocker.reason, tool_name="auto_answerer")
+                blocker_text = answer.blocker.reason
+                state.mark_blocked(blocker_text, tool_name="auto_answerer")
+                record_authoring_backend(state)
                 self._save(state)
                 return AutoInterviewResult(
                     "blocked",
                     state.interview_session_id,
                     ledger,
                     state.current_round,
-                    answer.blocker.reason,
+                    blocker_text,
                 )
             state.current_round = round_number
             self.answerer.apply(answer, ledger, question=turn.question)
@@ -225,14 +231,17 @@ class AutoInterviewDriver:
                     )
                 )
             except TimeoutError as exc:
-                state.mark_blocked(str(exc), tool_name="interview.answer")
+                message = str(exc)
+                state.mark_blocked(message, tool_name="interview.answer")
+                record_authoring_backend(state)
                 self._save(state)
                 return AutoInterviewResult(
-                    "blocked", state.interview_session_id, ledger, round_number, str(exc)
+                    "blocked", state.interview_session_id, ledger, round_number, message
                 )
             except Exception as exc:
                 blocker = f"interview answer failed: {exc}"
                 state.mark_blocked(blocker, tool_name="interview.answer")
+                record_authoring_backend(state)
                 self._save(state)
                 return AutoInterviewResult(
                     "blocked", state.interview_session_id, ledger, round_number, blocker
@@ -248,12 +257,14 @@ class AutoInterviewDriver:
             gaps = ", ".join(ledger.open_gaps())
             blocker = f"auto interview reached max rounds with unresolved gaps: {gaps}"
             state.mark_blocked(blocker, tool_name="interview_driver")
+            record_authoring_backend(state)
             self._save(state)
             return AutoInterviewResult(
                 "blocked", state.interview_session_id, ledger, self.max_rounds, blocker
             )
         blocker = "auto interview reached max rounds before backend marked the Seed ready"
         state.mark_blocked(blocker, tool_name="interview_driver")
+        record_authoring_backend(state)
         self._save(state)
         return AutoInterviewResult(
             "blocked", state.interview_session_id, ledger, self.max_rounds, blocker
@@ -299,6 +310,7 @@ class AutoInterviewDriver:
         gaps = ", ".join(ledger.open_gaps())
         blocker = f"interview backend completed before auto ledger was ready: {gaps}"
         state.mark_blocked(blocker, tool_name="interview_driver")
+        record_authoring_backend(state)
         self._save(state)
         return AutoInterviewResult("blocked", state.interview_session_id, ledger, rounds, blocker)
 

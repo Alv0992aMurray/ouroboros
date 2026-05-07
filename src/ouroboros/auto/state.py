@@ -233,6 +233,7 @@ class AutoPipelineState:
     pending_question: str | None = None
     last_tool_name: str | None = None
     last_error: str | None = None
+    last_authoring_backend: str | None = None
     last_progress_message: str = "created"
     phase_started_at: str = field(default_factory=utc_now_iso)
     last_progress_at: str = field(default_factory=utc_now_iso)
@@ -271,6 +272,13 @@ class AutoPipelineState:
         self.updated_at = now
         self.last_progress_message = message
         self.last_error = error
+        # Authoring-backend attribution is scoped to the most recent
+        # authoring failure; reset on every transition so a later
+        # non-authoring blocker (grade_gate, seed_saver, run_starter)
+        # cannot inherit stale metadata. Authoring-side call sites must
+        # call ``record_authoring_backend(state)`` *after* mark_blocked
+        # / mark_failed to repopulate the field.
+        self.last_authoring_backend = None
 
     def mark_progress(self, message: str, *, tool_name: str | None = None) -> None:
         """Record non-terminal progress within the current phase."""
@@ -354,6 +362,7 @@ class AutoPipelineState:
         payload.setdefault("provenance", None)
         payload.setdefault("auto_answer_log", [])
         payload.setdefault("seed_origin", SeedOrigin.NONE.value)
+        payload.setdefault("last_authoring_backend", None)
         required_fields = {item.name for item in fields(cls)}
         missing_fields = sorted(required_fields - payload.keys())
         if missing_fields:

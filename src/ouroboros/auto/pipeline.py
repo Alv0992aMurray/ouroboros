@@ -7,6 +7,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from ouroboros.auto.blocker_attribution import record_authoring_backend
 from ouroboros.auto.grading import GradeGate
 from ouroboros.auto.interview_driver import AutoInterviewDriver
 from ouroboros.auto.ledger import SeedDraftLedger
@@ -63,6 +64,7 @@ class AutoPipelineResult:
     opencode_mode: str | None = None
     invoked_by: str = "direct"
     provenance: dict[str, Any] | None = None
+    last_authoring_backend: str | None = None
 
 
 @dataclass(slots=True)
@@ -231,10 +233,15 @@ class AutoPipeline:
                         f"seed generation timed out after {self.seed_timeout_seconds:.0f}s",
                         tool_name="seed_generator",
                     )
+                    record_authoring_backend(state)
                     self._save(state)
                     return self._result(state, ledger, blocker=str(exc) or state.last_error)
                 except Exception as exc:
-                    state.mark_failed(f"seed generation failed: {exc}", tool_name="seed_generator")
+                    state.mark_failed(
+                        f"seed generation failed: {exc}",
+                        tool_name="seed_generator",
+                    )
+                    record_authoring_backend(state)
                     self._save(state)
                     return self._result(state, ledger, blocker=state.last_error)
                 state.mark_progress("Seed generated", tool_name="seed_generator")
@@ -497,6 +504,7 @@ class AutoPipeline:
             opencode_mode=state.opencode_mode,
             invoked_by=state.invoked_by(),
             provenance=dict(state.provenance) if state.provenance else None,
+            last_authoring_backend=state.last_authoring_backend,
         )
 
     def _attach_run_if_requested(self, state: AutoPipelineState) -> bool | None:
