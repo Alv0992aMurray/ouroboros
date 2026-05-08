@@ -649,8 +649,8 @@ class ClaudeCodeAdapter:
                 disallowed = ["*", *all_tools]
             else:
                 disallowed = sorted(
-                    set(t for t in all_tools if t not in self._allowed_tools)
-                    | set(t for t in dangerous_tools if t not in self._allowed_tools)
+                    {t for t in all_tools if t not in self._allowed_tools}
+                    | {t for t in dangerous_tools if t not in self._allowed_tools}
                 )
         else:
             disallowed = dangerous_tools
