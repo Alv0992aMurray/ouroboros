@@ -156,14 +156,36 @@ KEYWORD_MAP = [
 
 
 def is_mcp_configured() -> bool:
-    """Check if MCP server is registered in ~/.claude/mcp.json."""
+    """Check if the Ouroboros MCP server is registered in ~/.claude/mcp.json.
+
+    Earlier this did ``"ouroboros" in mcp_path.read_text()`` — a substring
+    match that returns True whenever the file mentions ``ouroboros``
+    anywhere, even inside a comment, an unrelated server's ``description``
+    field (``"compatible with ouroboros workflows"``), or a path string.
+    The setup gate then silently skipped and routed the user into an
+    MCP-required skill that wasn't actually registered.
+
+    Now we parse the JSON and check that ``ouroboros`` (or any
+    ``ouroboros``-prefixed alias such as ``ouroboros-dev``) is a real key
+    under the ``mcpServers`` object — the structural location Claude
+    Code's MCP loader actually reads.
+    """
     try:
         mcp_path = Path.home() / ".claude" / "mcp.json"
         if not mcp_path.exists():
             return False
-        return "ouroboros" in mcp_path.read_text()
-    except Exception:
+        data = json.loads(mcp_path.read_text())
+    except (OSError, ValueError):
         return False
+    if not isinstance(data, dict):
+        return False
+    servers = data.get("mcpServers")
+    if not isinstance(servers, dict):
+        return False
+    return any(
+        isinstance(name, str) and (name == "ouroboros" or name.startswith("ouroboros-"))
+        for name in servers
+    )
 
 
 def is_first_time() -> bool:

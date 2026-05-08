@@ -143,6 +143,68 @@ class TestDetectKeywords:
         assert result["suggested_skill"] != "/ouroboros:resume-session"
 
 
+class TestIsMcpConfigured:
+    """Structural mcpServers parse — never substring 'ouroboros' anywhere."""
+
+    def test_no_mcp_file_returns_false(self, tmp_path):
+        with patch.object(_mod.Path, "home", return_value=tmp_path):
+            assert _mod.is_mcp_configured() is False
+
+    def test_unrelated_server_mentioning_ouroboros_in_description_does_not_match(self, tmp_path):
+        """Regression: ``"ouroboros" in mcp.read_text()`` returned True for any
+        unrelated server whose description merely mentioned ouroboros, e.g.::
+
+            {"mcpServers": {"other-server": {"description":
+              "compatible with ouroboros workflows"}}}
+
+        That made the setup gate falsely report MCP as configured and
+        routed users into MCP-required skills that hadn't actually been
+        registered.
+        """
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "mcp.json").write_text(
+            '{"mcpServers": {"unrelated-server": '
+            '{"description": "compatible with ouroboros workflows"}}}'
+        )
+        with patch.object(_mod.Path, "home", return_value=tmp_path):
+            assert _mod.is_mcp_configured() is False
+
+    def test_ouroboros_in_path_string_does_not_match(self, tmp_path):
+        """Path strings containing 'ouroboros' (e.g. install path) must not
+        be mistaken for a registered server."""
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "mcp.json").write_text(
+            '{"mcpServers": {"other-server": {"command": "/usr/local/ouroboros-old/bin/x"}}}'
+        )
+        with patch.object(_mod.Path, "home", return_value=tmp_path):
+            assert _mod.is_mcp_configured() is False
+
+    def test_real_ouroboros_server_key_matches(self, tmp_path):
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "mcp.json").write_text('{"mcpServers": {"ouroboros": {"command": "ooo"}}}')
+        with patch.object(_mod.Path, "home", return_value=tmp_path):
+            assert _mod.is_mcp_configured() is True
+
+    def test_ouroboros_dev_alias_key_matches(self, tmp_path):
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "mcp.json").write_text(
+            '{"mcpServers": {"ouroboros-dev": {"command": "uv run ooo"}}}'
+        )
+        with patch.object(_mod.Path, "home", return_value=tmp_path):
+            assert _mod.is_mcp_configured() is True
+
+    def test_malformed_json_returns_false(self, tmp_path):
+        claude_dir = tmp_path / ".claude"
+        claude_dir.mkdir()
+        (claude_dir / "mcp.json").write_text("{not valid json")
+        with patch.object(_mod.Path, "home", return_value=tmp_path):
+            assert _mod.is_mcp_configured() is False
+
+
 class TestSetupBypass:
     """qa skill has a no-MCP fallback, so it must bypass the setup gate."""
 
