@@ -49,6 +49,54 @@ EventSink = Callable[[dict], None]
 ConfirmFn = Callable[[str], bool]
 
 
+# Per-element and total argv length caps for audit events. The schema
+# header documents argv as bounded; without explicit caps a megabyte-
+# scale argv is copied into every event the firewall emits (invoked,
+# permission_used, completed) and then deep-copied again by
+# ``ledger_adapter.wrap_plugin_event``. That is a local DoS / log-bloat
+# vector with no upside — operators do not benefit from megabyte-long
+# argv records in the audit log. The caps below are conservative for
+# real CLI usage (no realistic plugin command needs 4 KB in a single
+# argv element, and no realistic invocation needs more than 16 KB
+# total). When the caps trip we replace the offending bytes with the
+# ``<truncated:N>`` sentinel so consumers can detect that truncation
+# happened without having to re-derive lengths from the log.
+ARGV_ELEMENT_BYTE_LIMIT = 4 * 1024
+ARGV_TOTAL_BYTE_LIMIT = 16 * 1024
+
+
+def _bound_argv(argv: list[str]) -> list[str]:
+    """Return a length-bounded copy of ``argv`` for audit-event payloads.
+
+    Each element is truncated at ``ARGV_ELEMENT_BYTE_LIMIT`` bytes (UTF-8)
+    and the cumulative byte total is capped at ``ARGV_TOTAL_BYTE_LIMIT``.
+    Truncated elements are replaced with the sentinel
+    ``"<truncated:N>"`` (N = original byte length) so downstream
+    consumers can tell a real argv element from one that was elided.
+    """
+    bounded: list[str] = []
+    remaining = ARGV_TOTAL_BYTE_LIMIT
+    for element in argv:
+        if remaining <= 0:
+            bounded.append(f"<truncated:{len(argv) - len(bounded)}-remaining>")
+            break
+        if not isinstance(element, str):
+            element = str(element)
+        encoded = element.encode("utf-8", errors="replace")
+        original_len = len(encoded)
+        if original_len > ARGV_ELEMENT_BYTE_LIMIT:
+            bounded.append(f"<truncated:{original_len}>")
+            remaining -= len(bounded[-1].encode("utf-8"))
+            continue
+        if original_len > remaining:
+            bounded.append(f"<truncated:{original_len}>")
+            remaining = 0
+            continue
+        bounded.append(element)
+        remaining -= original_len
+    return bounded
+
+
 @dataclass(frozen=True)
 class InvocationResult:
     status: Literal["success", "blocked", "failed"]
@@ -83,7 +131,7 @@ def _event_envelope(
     """Build an event matching schemas/0.1/audit-event.schema.json."""
     cmd: dict = {"namespace": namespace, "name": command_name}
     if argv is not None:
-        cmd["argv"] = list(argv)
+        cmd["argv"] = _bound_argv(argv)
     event: dict = {
         "schema_version": SCHEMA_VERSION,
         "event_type": event_type,

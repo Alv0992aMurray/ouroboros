@@ -95,6 +95,91 @@ def _fake_runner(
 # ---------------------------------------------------------------------------
 
 
+def test_argv_per_element_byte_cap_truncates_into_sentinel(tmp_path: Path) -> None:
+    """A single argv element exceeding ARGV_ELEMENT_BYTE_LIMIT is replaced
+    with a ``<truncated:N>`` sentinel rather than copied verbatim into
+    every event the firewall emits.
+
+    Without bounding, a megabyte-scale argv element is copied into
+    ``plugin.invoked``, ``plugin.permission_used`` AND ``plugin.completed``
+    — and then deep-copied again by ``ledger_adapter.wrap_plugin_event``.
+    That is a local DoS / log-bloat vector with no upside.
+    """
+    from ouroboros.plugin.firewall import (
+        ARGV_ELEMENT_BYTE_LIMIT,
+        ARGV_TOTAL_BYTE_LIMIT,
+    )
+
+    program = _make_program(tmp_path)
+    trust = TrustStore(root=tmp_path / "trust").grant(
+        plugin="github-pr-ops",
+        version="0.1.0",
+        scope="github:read",
+        granted_by="user:test",
+    )
+    huge = "X" * (ARGV_ELEMENT_BYTE_LIMIT + 100)
+    events: list[dict] = []
+    result = invoke_plugin(
+        program,
+        command_name="review",
+        argv=["normal", huge, "after"],
+        trust_record=trust,
+        event_sink=events.append,
+        correlation_id="corr-cap-1",
+        subprocess_runner=_fake_runner(),
+    )
+    assert result.status == "success"
+    invoked_argv = events[0]["command"]["argv"]
+    # First and third elements survive verbatim.
+    assert invoked_argv[0] == "normal"
+    assert invoked_argv[-1] == "after"
+    # Middle element is replaced with a sentinel that records the
+    # original length so consumers can audit the elision.
+    assert invoked_argv[1] == f"<truncated:{len(huge)}>", invoked_argv
+    # Every emitted event reflects the same bound, not just the first.
+    for event in events:
+        if "argv" in event["command"]:
+            assert all(
+                len(e.encode("utf-8")) <= max(ARGV_ELEMENT_BYTE_LIMIT, 32)
+                for e in event["command"]["argv"]
+            ), event
+
+
+def test_argv_total_byte_cap_truncates_remaining_tail(tmp_path: Path) -> None:
+    """Once the cumulative byte total crosses ARGV_TOTAL_BYTE_LIMIT,
+    remaining elements are folded into a single ``<truncated:...>`` sentinel
+    so the audit event payload stays bounded regardless of element count."""
+    from ouroboros.plugin.firewall import ARGV_TOTAL_BYTE_LIMIT
+
+    program = _make_program(tmp_path)
+    trust = TrustStore(root=tmp_path / "trust").grant(
+        plugin="github-pr-ops",
+        version="0.1.0",
+        scope="github:read",
+        granted_by="user:test",
+    )
+    # Many medium-sized elements whose total exceeds the cap.
+    big = "Y" * 2048
+    argv = [big] * (ARGV_TOTAL_BYTE_LIMIT // len(big) + 5)
+    events: list[dict] = []
+    invoke_plugin(
+        program,
+        command_name="review",
+        argv=argv,
+        trust_record=trust,
+        event_sink=events.append,
+        correlation_id="corr-cap-2",
+        subprocess_runner=_fake_runner(),
+    )
+    invoked_argv = events[0]["command"]["argv"]
+    serialized_bytes = sum(len(e.encode("utf-8")) for e in invoked_argv)
+    # Bounded plus a small slack for the sentinel string itself.
+    assert serialized_bytes <= ARGV_TOTAL_BYTE_LIMIT + 64
+    # The tail must be a sentinel describing how many elements were
+    # elided, not silent zero-suffix loss.
+    assert any(e.startswith("<truncated:") for e in invoked_argv)
+
+
 def test_happy_path_emits_invoked_then_permission_then_completed(tmp_path: Path) -> None:
     """Test 1: trusted invocation emits invoked → permission_used → completed."""
     program = _make_program(tmp_path)
