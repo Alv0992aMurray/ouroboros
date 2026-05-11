@@ -223,7 +223,7 @@ class DomainProfileRegistry:
         best_profile: DomainProfile | None = None
         best_confidence: float = 0.0
         for profile in self._profiles:
-            confidence = profile.detector(cwd)
+            confidence = _detector_confidence(profile, cwd)
             if confidence > best_confidence:
                 best_confidence = confidence
                 best_profile = profile
@@ -249,7 +249,7 @@ class DomainProfileRegistry:
         seen_codes: set[str] = set()
         result: list[VerifiablePredicate] = []
         for profile in self._profiles:
-            if profile.detector(cwd) >= threshold:
+            if _detector_confidence(profile, cwd) >= threshold:
                 for predicate in profile.verifiable_predicates:
                     if predicate.code not in seen_codes:
                         seen_codes.add(predicate.code)
@@ -259,3 +259,10 @@ class DomainProfileRegistry:
 
 #: Module-level singleton registry.  PR-2 will register the ``coding`` profile here.
 DEFAULT_REGISTRY: DomainProfileRegistry = DomainProfileRegistry()
+
+
+def _detector_confidence(profile: DomainProfile, cwd: Path) -> float:
+    try:
+        return profile.detector(cwd)
+    except Exception:
+        return 0.0

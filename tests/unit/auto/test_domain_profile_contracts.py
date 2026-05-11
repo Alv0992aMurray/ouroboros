@@ -7,7 +7,7 @@ imported; every fixture is a minimal inline stub.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any
@@ -68,6 +68,7 @@ def _make_profile(
     confidence: float = 0.8,
     predicates: Iterable[VerifiablePredicate] = (),
     safe_defaults: Mapping[str, Any] | None = None,
+    detector: Callable[[Path], float] | None = None,
 ) -> DomainProfile:
     return DomainProfile(
         name=name,
@@ -78,7 +79,7 @@ def _make_profile(
         safe_defaults=(
             safe_defaults if safe_defaults is not None else {"runtime_context": "existing project"}
         ),
-        detector=lambda _cwd: confidence,
+        detector=detector or (lambda _cwd: confidence),
     )
 
 
@@ -262,6 +263,29 @@ def test_registry_detect_best_returns_none_when_empty() -> None:
     assert registry.detect_best(Path("/tmp")) is None
 
 
+def test_registry_detect_best_treats_detector_exception_as_zero_confidence() -> None:
+    def _raise_detector(_cwd: Path) -> float:
+        raise OSError("unreadable")
+
+    registry = DomainProfileRegistry()
+    broken = _make_profile(name="broken", detector=_raise_detector)
+    viable = _make_profile(name="viable", confidence=0.6)
+    registry.register(broken)
+    registry.register(viable)
+
+    assert registry.detect_best(Path("/tmp")) is viable
+
+
+def test_registry_detect_best_returns_none_when_all_detectors_fail() -> None:
+    def _raise_detector(_cwd: Path) -> float:
+        raise OSError("unreadable")
+
+    registry = DomainProfileRegistry()
+    registry.register(_make_profile(name="broken", detector=_raise_detector))
+
+    assert registry.detect_best(Path("/tmp")) is None
+
+
 def test_registry_union_predicates_applies_threshold() -> None:
     registry = DomainProfileRegistry()
     exit_pred = _ExitCodePredicate()
@@ -292,6 +316,23 @@ def test_registry_union_predicates_applies_threshold() -> None:
     codes = [p.code for p in predicates]
     assert "exit_code" in codes
     assert "wcag_contrast" not in codes
+
+
+def test_registry_union_predicates_ignores_detector_exceptions() -> None:
+    def _raise_detector(_cwd: Path) -> float:
+        raise OSError("unreadable")
+
+    registry = DomainProfileRegistry()
+    exit_pred = _ExitCodePredicate()
+    contrast_pred = _ContrastPredicate()
+    registry.register(
+        _make_profile(name="broken", predicates=(exit_pred,), detector=_raise_detector)
+    )
+    registry.register(_make_profile(name="viable", predicates=(contrast_pred,), confidence=0.8))
+
+    predicates = registry.union_predicates(Path("/tmp"), threshold=0.5)
+
+    assert predicates == (contrast_pred,)
 
 
 def test_default_registry_is_a_profile_registry_singleton() -> None:
