@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ from ouroboros.mcp.errors import MCPServerError
 from ouroboros.mcp.job_manager import JobManager, JobStatus
 from ouroboros.mcp.tools.authoring_handlers import GenerateSeedHandler, InterviewHandler
 from ouroboros.mcp.tools.execution_handlers import StartExecuteSeedHandler
+from ouroboros.mcp.tools.qa import QAHandler
 from ouroboros.mcp.tools.ralph_handlers import RalphHandler
 from ouroboros.mcp.types import MCPToolResult
 
@@ -260,6 +262,14 @@ class HandlerRalphStarter:
             "dispatch_mode": "job",
             "terminal_status": terminal_status,
             "stop_reason": stop_reason,
+            # RFC #809 Phase 2.1: surface the Ralph job's result_text so
+            # ``AutoPipeline._evaluate_or_complete`` can grade it against
+            # the Seed AC via ``HandlerEvaluator``. ``""`` is a VALID graded
+            # artifact (a Ralph run with intentionally empty output must
+            # still be graded), so route through ``_artifact_text`` —
+            # ``_optional_str`` would collapse the empty string to None and
+            # silently skip EVALUATE.
+            "result_text": _artifact_text(terminal_meta.get("__result_text__")),
         }
 
 
@@ -292,7 +302,90 @@ class HandlerRalphPoller:
             "dispatch_mode": "job",
             "terminal_status": terminal_status,
             "stop_reason": stop_reason,
+            # RFC #809 Phase 2.1: surface the Ralph job's result_text so a
+            # resumed RALPH_HANDOFF checkpoint can still grade the artifact
+            # via EVALUATE — same contract as the starter path. ``""`` is a
+            # VALID graded artifact, so use ``_artifact_text`` rather than
+            # ``_optional_str``.
+            "result_text": _artifact_text(terminal_meta.get("__result_text__")),
         }
+
+
+@dataclass(frozen=True, slots=True)
+class EvaluateResult:
+    """Structured result returned by :class:`HandlerEvaluator`.
+
+    Mirrors the relevant subset of ``ouroboros_qa``'s response meta so the
+    pipeline can persist the verdict on :class:`AutoPipelineState` and reuse
+    it on resume without re-invoking the LLM judge.
+
+    ``error`` is non-empty when the QA handler returned a transient failure
+    (resumable). The pipeline treats this as a BLOCKED state, not FAILED.
+    """
+
+    passed: bool
+    score: float
+    verdict: str
+    differences: tuple[str, ...] = ()
+    suggestions: tuple[str, ...] = ()
+    error: str | None = None
+
+
+class HandlerEvaluator:
+    """Callable QA evaluator backed by ``ouroboros_qa`` :class:`QAHandler`.
+
+    Builds a ``quality_bar`` from the Seed's acceptance criteria using the
+    exact phrasing established by ``evolution_handlers.py`` ("The execution
+    must satisfy all acceptance criteria"). Grades a run artifact against
+    that bar with ``pass_threshold=0.80`` and returns a typed
+    :class:`EvaluateResult`. The artifact is opaque to the adapter — callers
+    pull it from the appropriate runtime surface (e.g. the Ralph terminal
+    job snapshot's ``result_text``).
+
+    The adapter is intentionally thin so :class:`AutoPipeline._run_evaluate`
+    owns the decision policy (transition to COMPLETE vs mark_blocked, cache
+    by artifact hash for resume idempotency, etc.).
+    """
+
+    def __init__(self, qa_handler: QAHandler) -> None:
+        self.qa_handler = qa_handler
+
+    async def __call__(self, seed: Seed, run_artifact: str) -> EvaluateResult:
+        if seed.acceptance_criteria:
+            ac_lines = [f"- {ac}" for ac in seed.acceptance_criteria]
+            quality_bar = "The execution must satisfy all acceptance criteria:\n" + "\n".join(
+                ac_lines
+            )
+        else:
+            quality_bar = "The execution must satisfy the seed's intent."
+
+        seed_yaml = yaml.dump(
+            seed.to_dict(), default_flow_style=False, allow_unicode=True, sort_keys=False
+        )
+        result = await self.qa_handler.handle(
+            {
+                "artifact": run_artifact,
+                "artifact_type": "test_output",
+                "quality_bar": quality_bar,
+                "seed_content": seed_yaml,
+                "pass_threshold": 0.80,
+            }
+        )
+        if result.is_err:
+            return EvaluateResult(
+                passed=False,
+                score=0.0,
+                verdict="fail",
+                error=str(result.error),
+            )
+        meta = result.value.meta or {}
+        return EvaluateResult(
+            passed=bool(meta.get("passed", False)),
+            score=float(meta.get("score", 0.0)),
+            verdict=str(meta.get("verdict", "fail")),
+            differences=tuple(meta.get("differences", ()) or ()),
+            suggestions=tuple(meta.get("suggestions", ()) or ()),
+        )
 
 
 async def _wait_for_job_terminal(
@@ -305,6 +398,13 @@ async def _wait_for_job_terminal(
     the returned mapping is always populated — it falls back to the job's
     own terminal status (e.g. ``"failed"`` for an exception path) when the
     inner ralph result did not provide one.
+
+    Surfaces the snapshot's ``result_text`` under the synthetic
+    ``__result_text__`` key so callers (notably the Ralph adapter ⇒ EVALUATE
+    pipeline path) can grade the human-readable artifact without having to
+    re-poll the job manager themselves. The key is namespaced with
+    leading/trailing underscores to avoid colliding with any
+    Ralph-supplied meta key.
     """
     while True:
         snapshot = await job_manager.get_snapshot(job_id)
@@ -314,6 +414,8 @@ async def _wait_for_job_terminal(
                 "status",
                 "completed" if snapshot.status is JobStatus.COMPLETED else "failed",
             )
+            if snapshot.result_text is not None:
+                meta["__result_text__"] = snapshot.result_text
             return meta
         await asyncio.sleep(poll_interval)
 
@@ -378,3 +480,15 @@ def _extract_seed_yaml(text: str) -> str:
 
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
+
+
+def _artifact_text(value: object) -> str | None:
+    """Return ``value`` verbatim when it is a string (including ``""``), else None.
+
+    Distinct from :func:`_optional_str` because an artifact graded by
+    EVALUATE is a valid input even when empty: a Ralph job whose output is
+    intentionally empty must still be evaluated against the Seed AC.
+    Returning ``None`` for ``""`` would silently skip EVALUATE and produce a
+    false-pass — the bug fixed by RFC #809 Phase 2.1.
+    """
+    return value if isinstance(value, str) else None
