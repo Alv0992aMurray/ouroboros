@@ -67,6 +67,7 @@ packages = ["src/ouroboros"]
 exclude = [
     "src/ouroboros/opencode/plugin/**",
     "src/ouroboros/plugin/schemas/**",
+    "src/ouroboros/profiles/**",
 ]
 
 [tool.hatch.build.targets.wheel.force-include]

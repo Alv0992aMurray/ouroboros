@@ -177,19 +177,30 @@ class TestWheelPackaging:
             timeout=120,
             check=False,
         )
-        if result.returncode != 0:
-            pytest.skip(f"uv build did not produce a wheel: {result.stderr}")
+        # The whole point of this test is to catch packaging regressions —
+        # a non-zero build status is the regression signal, not a skip.
+        assert result.returncode == 0, (
+            f"uv build failed (rc={result.returncode}):\n"
+            f"stderr:\n{result.stderr}\nstdout:\n{result.stdout}"
+        )
 
         wheels = list(out.glob("*.whl"))
         assert wheels, f"no wheel produced in {out}"
         wheel = wheels[0]
         with zipfile.ZipFile(wheel) as zf:
-            names = set(zf.namelist())
+            # Keep the list — not a set — so duplicate ZIP entries (which
+            # PyPI rejects) are caught here. The exclude/force-include
+            # pairing in pyproject.toml is fragile; this is the guard.
+            names = zf.namelist()
 
         for stem in ("code", "research", "analysis"):
             expected = f"ouroboros/profiles/{stem}.yaml"
-            assert expected in names, (
-                f"{expected!r} missing from wheel; force-include in "
-                f"pyproject.toml probably regressed. Wheel contents (sample): "
+            occurrences = sum(1 for n in names if n == expected)
+            assert occurrences == 1, (
+                f"{expected!r} appears {occurrences} times in wheel "
+                f"(should be exactly 1). Duplicate entries usually mean "
+                f"the wheel `exclude` for src/ouroboros/profiles is "
+                f"missing alongside the `force-include`. Wheel contents "
+                f"(profiles sample): "
                 f"{sorted(n for n in names if 'profile' in n)}"
             )
