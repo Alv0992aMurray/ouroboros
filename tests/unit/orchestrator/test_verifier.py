@@ -198,6 +198,40 @@ class TestVerifierExceptionWrapping:
         with pytest.raises(ValueError):
             VerifierVerdict(passed=False)
 
+    def test_verifier_returning_none_raises_contract_error(
+        self, code_profile: ExecutionProfile
+    ) -> None:
+        # Bot finding on #884 r4: Verifier is a static Protocol, so a
+        # buggy impl can return None (or any non-VerifierVerdict) at
+        # runtime. Without an explicit check, None would silently burn
+        # the retry budget with no reasons surfaced.
+        def returns_none(*, profile, ac, leaf_output, record):  # type: ignore[no-untyped-def]
+            return None
+
+        executor = ScriptedExecutor(outputs=[_code_evidence()])
+        with pytest.raises(VerifierContractError, match="expected VerifierVerdict"):
+            run_with_verifier(
+                executor=executor,
+                verifier=returns_none,  # type: ignore[arg-type]
+                profile=code_profile,
+                ac="x",
+            )
+
+    def test_verifier_returning_wrong_type_raises_contract_error(
+        self, code_profile: ExecutionProfile
+    ) -> None:
+        def returns_bool(*, profile, ac, leaf_output, record):  # type: ignore[no-untyped-def]
+            return True
+
+        executor = ScriptedExecutor(outputs=[_code_evidence()])
+        with pytest.raises(VerifierContractError, match="bool"):
+            run_with_verifier(
+                executor=executor,
+                verifier=returns_bool,  # type: ignore[arg-type]
+                profile=code_profile,
+                ac="x",
+            )
+
     def test_verifier_exhausts_budget_when_always_raises(
         self, code_profile: ExecutionProfile
     ) -> None:

@@ -242,7 +242,7 @@ def run_with_verifier(
             validation = validate_evidence(profile, record)
             if validation.ok:
                 try:
-                    verdict = verifier(
+                    raw_verdict = verifier(
                         profile=profile,
                         ac=ac,
                         leaf_output=leaf_output,
@@ -267,6 +267,21 @@ def run_with_verifier(
                         reasons=(f"verifier raised {type(exc).__name__}: {exc}",),
                         failure_class="STALL",
                     )
+                else:
+                    # Verifier is only a static Protocol — Python won't
+                    # enforce the return type at runtime. A buggy impl
+                    # that returns None (or any non-VerifierVerdict) would
+                    # otherwise sit as `attempt.verdict`, produce empty
+                    # _failure_reasons(), and silently burn the entire
+                    # retry budget. Surface the contract violation here.
+                    if not isinstance(raw_verdict, VerifierVerdict):
+                        msg = (
+                            f"Verifier returned {type(raw_verdict).__name__}, "
+                            "expected VerifierVerdict. This is a verifier "
+                            "implementation bug, not a transient failure."
+                        )
+                        raise VerifierContractError(msg)
+                    verdict = raw_verdict
 
         attempt = Attempt(
             leaf_output=leaf_output,
