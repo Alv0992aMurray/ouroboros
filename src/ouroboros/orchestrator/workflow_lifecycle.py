@@ -406,7 +406,8 @@ def next_runnable_node_ids(
 
     runnable: list[str] = []
     for node in spec.nodes:
-        if node.node_id in states:
+        state = states.get(node.node_id)
+        if state is not None and state is not WorkflowNodeLifecycleState.RETRIED:
             continue
         predecessors = incoming.get(node.node_id, set())
         if predecessors <= completed:
