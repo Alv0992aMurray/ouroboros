@@ -1233,8 +1233,8 @@ class CodexCliRuntime:
                 return candidate
         return {}
 
-    def _extract_path(self, item: dict[str, Any]) -> str:
-        """Extract a file path from a file change event."""
+    def _extract_paths(self, item: dict[str, Any]) -> tuple[str, ...]:
+        """Extract all file paths from a file change event."""
         candidates: list[object] = [
             item.get("path"),
             item.get("file_path"),
@@ -1248,13 +1248,40 @@ class CodexCliRuntime:
                         [
                             change.get("path"),
                             change.get("file_path"),
+                            change.get("target_file"),
                         ]
                     )
 
+        paths: list[str] = []
+        seen: set[str] = set()
         for candidate in candidates:
             if isinstance(candidate, str) and candidate.strip():
-                return candidate.strip()
-        return ""
+                path = candidate.strip()
+                if path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+        return tuple(paths)
+
+    def _extract_path(self, item: dict[str, Any]) -> str:
+        """Extract the first file path from a file change event."""
+        paths = self._extract_paths(item)
+        return paths[0] if paths else ""
+
+    def _extract_command_metadata(self, item: dict[str, Any]) -> dict[str, Any]:
+        """Extract command result fields that can support verifier evidence."""
+        data: dict[str, Any] = {}
+        for key in ("output", "stdout", "stderr", "result_preview", "status"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                data[key] = value.strip()
+        for key in ("exit_code", "exitCode"):
+            value = item.get(key)
+            if isinstance(value, int):
+                data["exit_code"] = value
+                break
+        if item.get("success") is True:
+            data.setdefault("subtype", "success")
+        return data
 
     def _build_tool_message(
         self,
@@ -1338,6 +1365,7 @@ class CodexCliRuntime:
                         tool_input={"command": command},
                         content=f"Calling tool: Bash: {command}",
                         handle=current_handle,
+                        extra_data=self._extract_command_metadata(item),
                     )
                 ]
 
@@ -1354,8 +1382,8 @@ class CodexCliRuntime:
                 ]
 
             if item_type == "file_change":
-                file_path = self._extract_path(item)
-                if not file_path:
+                file_paths = self._extract_paths(item)
+                if not file_paths:
                     return []
                 return [
                     self._build_tool_message(
@@ -1364,6 +1392,7 @@ class CodexCliRuntime:
                         content=f"Calling tool: Edit: {file_path}",
                         handle=current_handle,
                     )
+                    for file_path in file_paths
                 ]
 
             if item_type == "web_search":

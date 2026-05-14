@@ -178,6 +178,69 @@ def _runtime_message_search_text(message: AgentMessage) -> str:
     return "\n".join(parts).lower()
 
 
+def _runtime_message_file_path_values(message: AgentMessage) -> tuple[str, ...]:
+    """Return explicit file path values carried by a runtime message.
+
+    Codex/OpenCode file-change events may report absolute workspace paths while
+    typed evidence should normally claim workspace-relative paths. Keep this
+    structured path extraction separate from broad text search so read-only text
+    mentions still cannot prove ``files_touched``.
+    """
+    path_keys = {"file_path", "filepath", "filePath", "path", "target_file", "targetFile"}
+    values: list[str] = []
+
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if key in path_keys and isinstance(child, str) and child.strip():
+                    values.append(child.strip())
+                else:
+                    visit(child)
+        elif isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child)
+
+    for container_key in ("tool_input", "input", "arguments", "args"):
+        visit(message.data.get(container_key))
+    return tuple(values)
+
+
+def _file_claim_matches_runtime_path(
+    claim: str,
+    runtime_path: str,
+    *,
+    task_cwd: str | None,
+) -> bool:
+    """Return True when a claimed workspace path matches a runtime path value."""
+    claim_path = Path(claim.strip())
+    if not claim_path or claim_path.is_absolute() or ".." in claim_path.parts:
+        return False
+
+    runtime_path = runtime_path.strip()
+    if not runtime_path:
+        return False
+
+    runtime_candidate = Path(runtime_path)
+    if task_cwd is not None:
+        base = Path(task_cwd).resolve()
+        claimed_absolute = (base / claim_path).resolve()
+        runtime_absolute = (
+            runtime_candidate if runtime_candidate.is_absolute() else base / runtime_candidate
+        ).resolve()
+        try:
+            claimed_absolute.relative_to(base)
+            runtime_absolute.relative_to(base)
+        except ValueError:
+            return False
+        return runtime_absolute == claimed_absolute
+
+    normalized_claim = claim_path.as_posix().lower()
+    normalized_runtime = runtime_candidate.as_posix().lower()
+    return normalized_runtime == normalized_claim or normalized_runtime.endswith(
+        "/" + normalized_claim
+    )
+
+
 def _runtime_support_messages_for_field(
     field_name: str,
     messages: tuple[AgentMessage, ...],
@@ -225,7 +288,13 @@ def _runtime_messages_support_file_claim(
     except ValueError:
         return False
     if any(
-        _runtime_message_supports_file_reference(value, message, messages=messages, index=index)
+        _runtime_message_supports_file_reference(
+            value,
+            message,
+            messages=messages,
+            index=index,
+            task_cwd=task_cwd,
+        )
         for index, message in enumerate(messages)
     ):
         return True
@@ -238,6 +307,7 @@ def _runtime_messages_support_file_claim(
             message,
             messages=messages,
             index=index,
+            task_cwd=task_cwd,
             allow_bash_command_text=False,
         )
         for index, message in enumerate(messages)
@@ -250,6 +320,7 @@ def _runtime_message_supports_file_reference(
     *,
     messages: tuple[AgentMessage, ...],
     index: int,
+    task_cwd: str | None,
     allow_bash_command_text: bool = True,
 ) -> bool:
     """Return True when one message plausibly reports touching a file reference."""
@@ -261,10 +332,13 @@ def _runtime_message_supports_file_reference(
         return _text_supports_file_mutation_reference(text, normalized_reference) or (
             allow_bash_command_text
             and _bash_command_mutates_file_reference(message, normalized_reference)
-            and _runtime_message_has_following_success(messages, index)
+            and _runtime_message_has_success_evidence(message, messages=messages, index=index)
         )
     if message.tool_name in {"Edit", "Write", "NotebookEdit"}:
-        return bool(text and _file_reference_pattern(normalized_reference).search(text))
+        return any(
+            _file_claim_matches_runtime_path(reference, path, task_cwd=task_cwd)
+            for path in _runtime_message_file_path_values(message)
+        )
     return _text_supports_file_mutation_reference(text, normalized_reference)
 
 
@@ -328,6 +402,48 @@ def _bash_command_mutates_file_reference(message: AgentMessage, normalized_refer
     )
 
 
+def _runtime_message_has_success_signal(message: AgentMessage) -> bool:
+    """Return True when one runtime message carries successful completion evidence."""
+    if message.is_error:
+        return False
+    exit_code = message.data.get("exit_code")
+    if isinstance(exit_code, int):
+        return exit_code == 0
+    if message.data.get("subtype") == "success":
+        return True
+    status = message.data.get("status")
+    if isinstance(status, str) and status.strip().lower() in {
+        "completed",
+        "success",
+        "succeeded",
+    }:
+        return True
+    text = "\n".join(
+        str(part)
+        for part in (
+            message.content,
+            message.data.get("result_preview"),
+            message.data.get("output"),
+            message.data.get("stdout"),
+            message.data.get("stderr"),
+        )
+        if isinstance(part, str)
+    ).lower()
+    return bool(re.search(r"\b(exit\s*code\s*0|completed|succeeded|success)\b", text))
+
+
+def _runtime_message_has_success_evidence(
+    message: AgentMessage,
+    *,
+    messages: tuple[AgentMessage, ...],
+    index: int,
+) -> bool:
+    """Return True when a tool-call message itself or its result proves success."""
+    if _runtime_message_has_success_signal(message):
+        return True
+    return _runtime_message_has_following_success(messages, index)
+
+
 def _runtime_message_has_following_success(messages: tuple[AgentMessage, ...], index: int) -> bool:
     """Return True when a tool-call message is followed by a successful result."""
     for candidate in messages[index + 1 :]:
@@ -335,22 +451,7 @@ def _runtime_message_has_following_success(messages: tuple[AgentMessage, ...], i
             return False
         if candidate.is_error:
             return False
-        exit_code = candidate.data.get("exit_code")
-        if isinstance(exit_code, int):
-            return exit_code == 0
-        if candidate.data.get("subtype") == "success":
-            return True
-        text = "\n".join(
-            str(part)
-            for part in (
-                candidate.content,
-                candidate.data.get("result_preview"),
-                candidate.data.get("output"),
-                candidate.data.get("stdout"),
-            )
-            if isinstance(part, str)
-        ).lower()
-        if re.search(r"\b(exit\s*code\s*0|completed|succeeded|success)\b", text):
+        if _runtime_message_has_success_signal(candidate):
             return True
     return False
 
@@ -416,11 +517,66 @@ def _message_contains_test_success(message: AgentMessage) -> bool:
     )
 
 
+def _test_claim_file_part(value: str) -> str | None:
+    """Return the file path portion of a pytest node-id style claim."""
+    stripped = value.strip()
+    if not stripped:
+        return None
+    file_part = stripped.split("::", 1)[0].strip()
+    return file_part or None
+
+
+def _test_command_targets_claim(
+    *,
+    command: str,
+    claim: str,
+    chunk_text: str,
+    task_cwd: str | None,
+) -> bool:
+    """Return True when a successful test command can cover a test claim."""
+    needle = claim.strip().lower()
+    if needle and needle in chunk_text:
+        return True
+
+    file_part = _test_claim_file_part(claim)
+    if file_part is None:
+        return False
+    normalized_file = file_part.lower()
+    normalized_command = command.lower()
+    if normalized_file in chunk_text or normalized_file in normalized_command:
+        return True
+
+    # A broad suite command such as ``pytest`` covers an existing claimed test
+    # file when its own output reports success. This keeps unrelated targeted
+    # commands (for example ``pytest tests/test_a.py`` while claiming
+    # ``tests/test_b.py``) rejected, but lets real Codex CLI transcripts that
+    # only report ``pytest`` + ``1 passed`` support node-id evidence.
+    command_parts = normalized_command.split()
+    broad_pytest = command_parts in (["pytest"], ["py.test"]) or command_parts[-3:] == [
+        "python",
+        "-m",
+        "pytest",
+    ]
+    if not broad_pytest or task_cwd is None:
+        return False
+    candidate = Path(file_part)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        return False
+    base = Path(task_cwd).resolve()
+    resolved = (base / candidate).resolve()
+    try:
+        resolved.relative_to(base)
+    except ValueError:
+        return False
+    return resolved.exists()
+
+
 def _runtime_messages_support_test_claim(
     *,
     value: str,
     backed_commands: tuple[str, ...],
     messages: tuple[AgentMessage, ...],
+    task_cwd: str | None,
 ) -> bool:
     """Return True when a backed test command chunk proves one test claim."""
     needle = value.strip().lower()
@@ -429,21 +585,31 @@ def _runtime_messages_support_test_claim(
     for index, message in enumerate(messages):
         if message.tool_name != "Bash":
             continue
-        if not any(
-            _looks_like_test_command(candidate)
-            and _runtime_messages_support_claim(candidate, (message,))
+        matching_commands = tuple(
+            candidate
             for candidate in backed_commands
-        ):
+            if _looks_like_test_command(candidate)
+            and _runtime_messages_support_claim(candidate, (message,))
+        )
+        if not matching_commands:
             continue
         chunk = [message]
         for following in messages[index + 1 :]:
             if following.tool_name == "Bash":
                 break
             chunk.append(following)
-        chunk_text = "\n".join(_runtime_message_search_text(item) for item in chunk)
-        if needle not in chunk_text:
+        if not any(_message_contains_test_success(item) for item in chunk):
             continue
-        if any(_message_contains_test_success(item) for item in chunk):
+        chunk_text = "\n".join(_runtime_message_search_text(item) for item in chunk)
+        if any(
+            _test_command_targets_claim(
+                command=command,
+                claim=value,
+                chunk_text=chunk_text,
+                task_cwd=task_cwd,
+            )
+            for command in matching_commands
+        ):
             return True
     return False
 
@@ -4205,6 +4371,7 @@ Files present:
                         value=value,
                         backed_commands=backed_commands,
                         messages=support_messages,
+                        task_cwd=self._task_cwd or self._adapter.working_directory,
                     ):
                         continue
                     unsupported.append(f"{field_name}: {value}")

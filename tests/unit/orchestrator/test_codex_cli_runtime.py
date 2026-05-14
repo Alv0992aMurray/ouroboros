@@ -661,6 +661,54 @@ class TestCodexCliRuntime:
         assert message.tool_name == "Bash"
         assert message.data["tool_input"]["command"] == "pytest -q"
 
+    def test_convert_command_execution_preserves_output_metadata(self) -> None:
+        """Command output must remain available for fat-harness verification."""
+        runtime = CodexCliRuntime(cli_path="codex")
+
+        messages = runtime._convert_event(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "command_execution",
+                    "command": "pytest",
+                    "output": "1 passed in 0.01s",
+                    "exit_code": 0,
+                },
+            },
+            current_handle=None,
+        )
+
+        assert len(messages) == 1
+        message = messages[0]
+        assert message.tool_name == "Bash"
+        assert message.data["tool_input"]["command"] == "pytest"
+        assert message.data["output"] == "1 passed in 0.01s"
+        assert message.data["exit_code"] == 0
+
+    def test_convert_file_change_event_emits_each_changed_file(self) -> None:
+        """Multi-file Codex changes should create one proof message per path."""
+        runtime = CodexCliRuntime(cli_path="codex")
+
+        messages = runtime._convert_event(
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "file_change",
+                    "changes": [
+                        {"path": "/tmp/project/hello.py"},
+                        {"path": "/tmp/project/test_hello.py"},
+                    ],
+                },
+            },
+            current_handle=None,
+        )
+
+        assert [message.tool_name for message in messages] == ["Edit", "Edit"]
+        assert [message.data["tool_input"]["file_path"] for message in messages] == [
+            "/tmp/project/hello.py",
+            "/tmp/project/test_hello.py",
+        ]
+
     def test_runtime_does_not_expose_local_dispatch_parser_helpers(self) -> None:
         """Dispatch parsing and metadata resolution live in the shared router."""
         obsolete_helpers = {

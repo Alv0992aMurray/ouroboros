@@ -1452,6 +1452,92 @@ class TestParallelACExecutor:
         assert evidence_event.data["verifier_passed"] is True
 
     @pytest.mark.asyncio
+    async def test_fat_harness_verifier_accepts_codex_runtime_evidence_shape(
+        self, tmp_path
+    ) -> None:
+        """Regression for #978 post-#1025: Codex emits abs paths and same-message output."""
+        hello_file = tmp_path / "hello.py"
+        test_file = tmp_path / "test_hello.py"
+        hello_file.write_text('def hello():\n    return "hello"\n', encoding="utf-8")
+        test_file.write_text(
+            "from hello import hello\n\n"
+            "def test_hello_returns_hello():\n"
+            "    assert hello() == 'hello'\n",
+            encoding="utf-8",
+        )
+
+        event_store, appended_events = _make_replaying_event_store()
+        executor = ParallelACExecutor(
+            adapter=_FinalMessageRuntime(
+                "```json\n"
+                "{\n"
+                '  "files_touched": ["hello.py", "test_hello.py"],\n'
+                '  "commands_run": ["pytest"],\n'
+                '  "tests_passed": ["test_hello.py::test_hello_returns_hello"]\n'
+                "}\n"
+                "```",
+                native_session_id="codex-session-post-1025-observation",
+                support_messages=(
+                    AgentMessage(
+                        type="assistant",
+                        content=f"Calling tool: Edit: {hello_file}",
+                        tool_name="Edit",
+                        data={"tool_input": {"file_path": str(hello_file)}},
+                    ),
+                    AgentMessage(
+                        type="assistant",
+                        content=f"Calling tool: Edit: {test_file}",
+                        tool_name="Edit",
+                        data={"tool_input": {"file_path": str(test_file)}},
+                    ),
+                    AgentMessage(
+                        type="assistant",
+                        content="Calling tool: Bash: pytest",
+                        tool_name="Bash",
+                        data={
+                            "tool_input": {"command": "pytest"},
+                            "output": "1 passed in 0.01s",
+                            "exit_code": 0,
+                        },
+                    ),
+                ),
+                cwd=str(tmp_path),
+            ),
+            event_store=event_store,
+            console=MagicMock(),
+            enable_decomposition=False,
+            execution_profile=load_profile("code"),
+            fat_harness_mode=True,
+            task_cwd=str(tmp_path),
+        )
+
+        result = await executor._execute_atomic_ac(
+            ac_index=0,
+            ac_content='Create hello.py with hello() returning "hello".',
+            session_id="orch_123",
+            tools=["Read"],
+            tool_catalog=(MCPToolDefinition(name="Read", description="Read a file."),),
+            system_prompt="system",
+            seed_goal="Ship the feature",
+            depth=0,
+            start_time=datetime.now(UTC),
+        )
+
+        assert result.success is True
+        assert result.error is None
+        assert result.atomic_verifier_verdict is not None
+        assert result.atomic_verifier_verdict.passed is True
+        evidence_event = next(
+            event
+            for event in appended_events
+            if event.type == "execution.ac.typed_evidence.observed"
+        )
+        assert evidence_event.data["typed_evidence_present"] is True
+        assert evidence_event.data["typed_evidence_valid"] is True
+        assert evidence_event.data["verifier_ran"] is True
+        assert evidence_event.data["verifier_passed"] is True
+
+    @pytest.mark.asyncio
     async def test_fat_harness_rejects_command_result_wrapper_after_parsing_json_fence(
         self,
     ) -> None:
