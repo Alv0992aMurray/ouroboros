@@ -87,6 +87,20 @@ def test_stale_revision_is_retryable_and_does_not_accept() -> None:
     assert result.to_event_data()["current_revision"] == 7
 
 
+def test_expected_revision_without_current_revision_fails_closed() -> None:
+    result = evaluate_runtime_transition(
+        _transition(expected_revision=7),
+        current_state="pending",
+        allowed_transitions=_ALLOWED,
+        current_revision=None,
+    )
+
+    assert result.accepted is False
+    assert result.failure_class is RuntimeFailureClass.RETRYABLE
+    assert result.failure_kind is RuntimeTransitionFailureKind.STALE_REVISION
+    assert "requires current_revision" in result.message
+
+
 def test_from_state_mismatch_is_retryable_snapshot_drift() -> None:
     result = evaluate_runtime_transition(
         _transition(from_state="pending", expected_revision=None),
@@ -144,6 +158,9 @@ def test_validation_rejects_noop_duplicate_evidence_and_secret_metadata() -> Non
 
     with pytest.raises(ValueError, match="must be unique"):
         _transition(evidence_refs=("event://same", "event://same"))
+
+    with pytest.raises(TypeError, match="iterable of strings"):
+        _transition(evidence_refs="event://job-123/claimed")
 
     with pytest.raises(ValueError, match="secret-like key"):
         _transition(metadata={"nested": {"api_key": "secret"}})

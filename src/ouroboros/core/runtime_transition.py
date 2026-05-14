@@ -180,6 +180,9 @@ def _payload_to_event_data(value: Mapping[str, FrozenJsonValue]) -> dict[str, Js
 
 
 def _normalize_refs(values: Iterable[str]) -> tuple[str, ...]:
+    if isinstance(values, str | bytes):
+        msg = "RuntimeTransition evidence_refs must be an iterable of strings, not a string"
+        raise TypeError(msg)
     normalized: list[str] = []
     seen: set[str] = set()
     for index, value in enumerate(values):
@@ -337,7 +340,20 @@ def evaluate_runtime_transition(
             current_revision=current_revision,
             current_state=normalized_current,
         )
-    if transition.expected_revision is not None and current_revision is not None:
+    if transition.expected_revision is not None:
+        if current_revision is None:
+            return RuntimeTransitionResult(
+                transition=transition,
+                decision=RuntimeTransitionDecision.REJECTED,
+                failure_class=RuntimeFailureClass.RETRYABLE,
+                failure_kind=RuntimeTransitionFailureKind.STALE_REVISION,
+                message=(
+                    "transition expected_revision requires current_revision; reload the "
+                    "latest runtime snapshot before retrying"
+                ),
+                current_revision=current_revision,
+                current_state=normalized_current,
+            )
         if transition.expected_revision != current_revision:
             return RuntimeTransitionResult(
                 transition=transition,
