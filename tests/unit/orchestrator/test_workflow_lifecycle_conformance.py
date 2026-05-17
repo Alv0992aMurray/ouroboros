@@ -14,7 +14,14 @@ from ouroboros.orchestrator.workflow_ir import (
 from ouroboros.orchestrator.workflow_lifecycle import (
     WorkflowLifecycleEvent,
     WorkflowLifecycleEventType,
+    effective_node_states,
+    next_runnable_node_ids,
     validate_workflow_lifecycle_conformance,
+)
+from tests.unit.orchestrator.workflow_ir_conformance_fixtures import (
+    invalid_post_terminal_history,
+    offline_conformance_spec,
+    retry_success_history,
 )
 
 
@@ -559,3 +566,48 @@ def test_conformance_ignores_foreign_workflow_events() -> None:
     assert report.ok is True
     assert report.event_count == 0
     assert report.issues == ()
+
+
+def test_offline_fixture_accepts_retry_success_history() -> None:
+    spec = offline_conformance_spec()
+
+    report = validate_workflow_lifecycle_conformance(spec, retry_success_history(spec))
+
+    assert report.ok is True
+    assert report.event_count == 12
+    assert report.errors == ()
+
+
+def test_offline_fixture_preserves_failed_attempt_before_success() -> None:
+    spec = offline_conformance_spec()
+    events = retry_success_history(spec)
+
+    states = effective_node_states(events)
+
+    assert states["task"].value == "completed"
+    assert [
+        event.event_type
+        for event in events
+        if event.node_id == "task"
+        and event.event_type
+        in {WorkflowLifecycleEventType.NODE_FAILED, WorkflowLifecycleEventType.NODE_RETRIED}
+    ] == [
+        WorkflowLifecycleEventType.NODE_FAILED,
+        WorkflowLifecycleEventType.NODE_RETRIED,
+    ]
+
+
+def test_offline_fixture_projects_next_runnable_nodes_without_dispatch() -> None:
+    spec = offline_conformance_spec()
+    events = retry_success_history(spec)[:8]
+
+    assert next_runnable_node_ids(spec, events) == ("verify",)
+
+
+def test_offline_fixture_rejects_post_terminal_history() -> None:
+    spec = offline_conformance_spec()
+
+    report = validate_workflow_lifecycle_conformance(spec, invalid_post_terminal_history(spec))
+
+    assert report.ok is False
+    assert [issue.code for issue in report.errors] == ["event_after_terminal_run"]
