@@ -48,6 +48,10 @@ from ouroboros.mcp.tools.execution_handlers import ExecuteSeedHandler, StartExec
 from ouroboros.mcp.tools.ralph_handlers import RalphHandler
 from ouroboros.orchestrator import resolve_agent_runtime_backend
 
+_STALE_COMPLETED_RALPH_HANDOFF_STATUSES = frozenset(
+    {RUN_HANDOFF_STARTED_STATUS, "ralph_retry_after_blocker"}
+)
+
 
 def _build_configured_ralph_handler(
     *, runtime: str | None, opencode_mode: str | None
@@ -668,8 +672,24 @@ def _is_run_handoff_only_completion(result: AutoPipelineResult) -> bool:
     )
 
 
+def _is_completed_ralph_product(result: AutoPipelineResult) -> bool:
+    """True when ``--complete-product`` reached a terminal Ralph completion."""
+    return (
+        result.status == "complete"
+        and result.ralph_dispatch_mode != "plugin"
+        and bool(result.ralph_job_id or result.ralph_lineage_id)
+    )
+
+
+def _is_external_ralph_plugin_completion(result: AutoPipelineResult) -> bool:
+    """True when auto is complete but product work lives in an OpenCode child."""
+    return result.status == "complete" and result.ralph_dispatch_mode == "plugin"
+
+
 def _print_result(result: AutoPipelineResult, *, show_ledger: bool) -> None:
     handoff_only = _is_run_handoff_only_completion(result)
+    completed_ralph_product = _is_completed_ralph_product(result)
+    external_ralph_plugin = _is_external_ralph_plugin_completion(result)
     if handoff_only:
         print_info("Auto run handoff started")
     elif result.status == "complete":
@@ -684,6 +704,12 @@ def _print_result(result: AutoPipelineResult, *, show_ledger: bool) -> None:
     if handoff_only:
         console.print(
             "Product status: [yellow]not verified complete; execution is still external/pending[/]"
+        )
+    elif completed_ralph_product:
+        console.print("Product status: [green]completed by Ralph loop[/]")
+    elif external_ralph_plugin:
+        console.print(
+            "Product status: [yellow]not verified complete; Ralph loop is external/pending[/]"
         )
     authoring, run_label = _format_runtime_labels(result.runtime_backend, result.opencode_mode)
     console.print(f"Authoring backend: [bold]{authoring}[/]")
@@ -703,7 +729,10 @@ def _print_result(result: AutoPipelineResult, *, show_ledger: bool) -> None:
         console.print(f"  Job ID: {result.job_id}")
         console.print(f"  Execution ID: {result.execution_id}")
         console.print(f"  Session ID: {result.run_session_id}")
-    if result.run_handoff_status:
+    if result.run_handoff_status and not (
+        completed_ralph_product
+        and result.run_handoff_status in _STALE_COMPLETED_RALPH_HANDOFF_STATUSES
+    ):
         console.print(f"Run handoff status: [bold]{result.run_handoff_status}[/]")
     if result.run_handoff_guidance:
         console.print(f"Run handoff guidance: [yellow]{result.run_handoff_guidance}[/]")
