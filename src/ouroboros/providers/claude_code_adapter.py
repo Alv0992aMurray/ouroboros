@@ -50,6 +50,7 @@ from ouroboros.providers.base import (
     UsageInfo,
 )
 from ouroboros.providers.profiles import resolve_completion_profile_result
+from ouroboros.providers.tool_use_diagnostics import diagnose_tool_use_turn
 
 log = structlog.get_logger(__name__)
 
@@ -289,6 +290,9 @@ class ClaudeCodeAdapter:
         stderr = str(error.details.get("stderr", "") or "").strip()
         if stderr:
             return False
+
+        if error.details.get("retryable") is True:
+            return True
 
         message = error.message.lower()
         is_cli_process_exit = error_type in {"ProcessError", "CalledProcessError"}
@@ -895,6 +899,12 @@ class ClaudeCodeAdapter:
         finish_reason = "stop"
         raw_response: dict[str, object] = {"session_id": None}
 
+        def _has_malformed_tool_use_error() -> bool:
+            return (
+                error_result is not None
+                and error_result.details.get("error_type") == "MalformedToolUseTurn"
+            )
+
         # Wrap query() to skip unknown message types (e.g., rate_limit_event)
         # that the SDK doesn't recognize yet. Without this, a single
         # MessageParseError inside the generator kills the entire request.
@@ -921,6 +931,26 @@ class ClaudeCodeAdapter:
                     session_id = msg_data.get("session_id")
 
                 elif class_name == "AssistantMessage":
+                    diagnostic = diagnose_tool_use_turn(sdk_message, provider="claude_code")
+                    if diagnostic.is_malformed:
+                        error_result = ProviderError(
+                            message=diagnostic.reason,
+                            details={
+                                **diagnostic.to_dict(),
+                                "session_id": session_id,
+                                "error_type": "MalformedToolUseTurn",
+                                "max_turns": options_kwargs["max_turns"],
+                                "cwd": self._cwd,
+                            },
+                        )
+                        log.warning(
+                            "claude_code_adapter.malformed_tool_use_turn",
+                            session_id=session_id,
+                            retryable=diagnostic.retryable,
+                            stop_reason=diagnostic.stop_reason,
+                            tool_use_count=diagnostic.tool_use_count,
+                        )
+                        continue
                     # Extract text content and tool use
                     content_blocks = getattr(sdk_message, "content", [])
                     for block in content_blocks:
@@ -928,6 +958,8 @@ class ClaudeCodeAdapter:
                         if block_type == "TextBlock":
                             text = getattr(block, "text", "")
                             content += text
+                            if text and _has_malformed_tool_use_error():
+                                error_result = None
                             # Callback for thinking/reasoning
                             if self._on_message and text.strip():
                                 self._on_message("thinking", text.strip())
@@ -972,6 +1004,8 @@ class ClaudeCodeAdapter:
 
                     # Check for errors - don't break, just record.
                     is_error = getattr(sdk_message, "is_error", False)
+                    if not is_error and _has_malformed_tool_use_error():
+                        error_result = None
                     if is_error:
                         subtype = getattr(sdk_message, "subtype", None)
                         stop_reason = getattr(sdk_message, "stop_reason", None)
@@ -1001,6 +1035,8 @@ class ClaudeCodeAdapter:
                                 max_turns=self._max_turns,
                                 stop_reason=stop_reason,
                             )
+                            if _has_malformed_tool_use_error():
+                                error_result = None
                             continue
 
                         error_msg = (
@@ -1021,6 +1057,8 @@ class ClaudeCodeAdapter:
                             subtype=subtype,
                             partial_rejected=bool(partial_content),
                         )
+                        if _has_malformed_tool_use_error() and subtype == "error_max_turns":
+                            continue
                         error_result = ProviderError(
                             message=error_msg,
                             details={
