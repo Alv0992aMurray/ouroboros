@@ -185,12 +185,39 @@ _TEST_MUTATION_WORK_RE = re.compile(
     r"\b(?:tests?|unit\s+tests?|integration\s+tests?|test_[\w.-]+\.py)\b.{0,60}\b"
     r"(?:cover|coverage)\b"
     r"|"
-    r"\bcheck(?:ed)?\s+(?:tests?|unit\s+tests?|integration\s+tests?|test_[\w.-]+\.py)"
+    r"\bcheck(?:ed)?\s+(?:(?:the|existing|current|new|added|updated)\s+){0,3}"
+    r"(?:tests?|unit\s+tests?|integration\s+tests?|test_[\w.-]+\.py)"
     r"\s+into\b"
     r"|"
     r"\bcheck\s+in\b.{0,60}\b"
     r"(?:tests?|unit\s+tests?|integration\s+tests?|test_[\w.-]+\.py)\b"
     r")",
+    re.IGNORECASE,
+)
+_DOCS_TEST_REFERENCE_RE = re.compile(
+    r"("
+    r"\b(?:document(?:ing)?|guide|manual|instructions?|usage|setup|how\s+to|verification)\b"
+    r".{0,100}\b(?:test\s+command|python\s+-m\s+unittest|pytest|tests?|unit\s+tests?|test\s+setup)\b"
+    r"|"
+    r"\b(?:test\s+command|python\s+-m\s+unittest|pytest|tests?|unit\s+tests?|test\s+setup)\b"
+    r".{0,100}\b(?:document(?:ing)?|guide|manual|instructions?|usage|setup|how\s+to|verification)\b"
+    r")",
+    re.IGNORECASE,
+)
+_NO_MUTATION_VALIDATION_RE = re.compile(
+    r"("
+    r"\bwithout\s+(?:modifying|changing|editing|writing|updating|touching)\b"
+    r"|"
+    r"\bwith\s+no\s+(?:file|code)?\s*(?:modifications?|changes?|edits?|updates?)\b"
+    r"|"
+    r"\bno\s+(?:file|code)?\s*(?:modifications?|changes?|edits?|updates?)\b"
+    r"|"
+    r"\bdo\s+not\s+(?:modify|change|edit|write|update|touch)\b"
+    r")",
+    re.IGNORECASE,
+)
+_EXISTING_VALIDATION_RE = re.compile(
+    r"\b(?:existing|current|already(?:-|\s+)?satisfied|already(?:-|\s+)?implemented)\b",
     re.IGNORECASE,
 )
 _VALIDATION_ONLY_ACTION_RE = re.compile(
@@ -207,7 +234,7 @@ _VALIDATION_ONLY_TEST_SIGNAL_RE = re.compile(
 def _has_mixed_code_and_documentation_work(ac_content: str) -> bool:
     """Return True when one AC appears to combine code mutation and docs work."""
     for connector in re.finditer(
-        r"\b(?:and|then|while|plus)\b|,",
+        r"\b(?:and|then|while|plus)\b|[,;:]",
         ac_content,
         re.IGNORECASE,
     ):
@@ -228,6 +255,52 @@ def _has_mixed_code_and_documentation_work(ac_content: str) -> bool:
     return False
 
 
+def _has_mixed_test_and_documentation_work(ac_content: str) -> bool:
+    """Return True when one AC appears to combine test mutation and docs work."""
+    for connector in re.finditer(
+        r"\b(?:and|then|while|plus)\b|[,;:]",
+        ac_content,
+        re.IGNORECASE,
+    ):
+        before = ac_content[: connector.start()]
+        after = ac_content[connector.end() :]
+        before_has_docs = bool(_DOC_ONLY_TARGET_RE.search(before))
+        after_has_docs = bool(_DOC_ONLY_TARGET_RE.search(after))
+        before_has_test_work = bool(_TEST_MUTATION_WORK_RE.search(before))
+        after_has_test_work = bool(_TEST_MUTATION_WORK_RE.search(after))
+        if after_has_docs and not before_has_docs and before_has_test_work:
+            return True
+        if before_has_docs and not after_has_docs and after_has_test_work:
+            return True
+    return False
+
+
+def _has_mixed_validation_and_documentation_work(ac_content: str) -> bool:
+    """Return True when one AC appears to combine docs work and test execution."""
+    for connector in re.finditer(
+        r"\b(?:and|then|while|plus)\b|[,;:]",
+        ac_content,
+        re.IGNORECASE,
+    ):
+        before = ac_content[: connector.start()]
+        after = ac_content[connector.end() :]
+        before_has_docs = bool(_DOC_ONLY_TARGET_RE.search(before))
+        after_has_docs = bool(_DOC_ONLY_TARGET_RE.search(after))
+        before_has_validation = bool(
+            _VALIDATION_ONLY_ACTION_RE.search(before)
+            and _VALIDATION_ONLY_TEST_SIGNAL_RE.search(before)
+        )
+        after_has_validation = bool(
+            _VALIDATION_ONLY_ACTION_RE.search(after)
+            and _VALIDATION_ONLY_TEST_SIGNAL_RE.search(after)
+        )
+        if after_has_docs and not before_has_docs and before_has_validation:
+            return True
+        if before_has_docs and not after_has_docs and after_has_validation:
+            return True
+    return False
+
+
 def _is_documentation_only_ac(ac_content: str) -> bool:
     """Return True when an AC asks only for documentation/README work.
 
@@ -239,7 +312,18 @@ def _is_documentation_only_ac(ac_content: str) -> bool:
     normalized = " ".join(ac_content.split())
     if not normalized:
         return False
-    if _TEST_WORK_RE.search(normalized):
+    has_docs_target = bool(_DOC_ONLY_TARGET_RE.search(normalized))
+    has_docs_action = bool(_DOC_ONLY_ACTION_RE.search(normalized))
+    documents_test_reference = (
+        has_docs_target and has_docs_action and bool(_DOCS_TEST_REFERENCE_RE.search(normalized))
+    )
+    if documents_test_reference and _has_mixed_validation_and_documentation_work(normalized):
+        return False
+    if _TEST_MUTATION_WORK_RE.search(normalized) and (
+        not documents_test_reference or _has_mixed_test_and_documentation_work(normalized)
+    ):
+        return False
+    if _TEST_WORK_RE.search(normalized) and not documents_test_reference:
         return False
     if _CODE_IMPLEMENTATION_ACTION_RE.search(normalized):
         return False
@@ -256,9 +340,7 @@ def _is_documentation_only_ac(ac_content: str) -> bool:
         )
     ):
         return False
-    return bool(_DOC_ONLY_TARGET_RE.search(normalized)) and bool(
-        _DOC_ONLY_ACTION_RE.search(normalized)
-    )
+    return has_docs_target and has_docs_action
 
 
 def _is_validation_only_ac(ac_content: str) -> bool:
@@ -274,14 +356,26 @@ def _is_validation_only_ac(ac_content: str) -> bool:
         return False
     if _DOC_ONLY_TARGET_RE.search(normalized) and _DOC_ONLY_ACTION_RE.search(normalized):
         return False
+    stripped_no_mutation_terms = _NO_MUTATION_VALIDATION_RE.sub("", normalized)
     if _TEST_MUTATION_WORK_RE.search(normalized):
         return False
-    if _CODE_MUTATION_ACTION_RE.search(normalized) and _CODE_WORK_SIGNAL_RE.search(normalized):
+    if _CODE_MUTATION_ACTION_RE.search(stripped_no_mutation_terms) and _CODE_WORK_SIGNAL_RE.search(
+        stripped_no_mutation_terms
+    ):
         return False
-    if _CODE_IMPLEMENTATION_ACTION_RE.search(normalized):
+    if _CODE_IMPLEMENTATION_ACTION_RE.search(stripped_no_mutation_terms):
         return False
-    if _has_mixed_code_and_documentation_work(normalized):
+    if _has_mixed_code_and_documentation_work(stripped_no_mutation_terms):
         return False
+    if (
+        (
+            _NO_MUTATION_VALIDATION_RE.search(normalized)
+            or _EXISTING_VALIDATION_RE.search(normalized)
+        )
+        and _VALIDATION_ONLY_ACTION_RE.search(normalized)
+        and _VALIDATION_ONLY_TEST_SIGNAL_RE.search(normalized)
+    ):
+        return True
     return bool(_VALIDATION_ONLY_ACTION_RE.search(normalized)) and bool(
         _VALIDATION_ONLY_TEST_SIGNAL_RE.search(normalized)
     )
