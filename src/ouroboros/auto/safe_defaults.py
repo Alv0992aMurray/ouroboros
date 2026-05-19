@@ -346,17 +346,13 @@ def _unsafe_context_reason(
     for reason, pattern in _UNSAFE_CONTEXT_PATTERNS:
         match = re.search(pattern, context)
         if match:
-            matched_token = match.group(0)
-            if len(matched_token) > 80:
-                matched_token = matched_token[:80]
-            text_prefix = context[:120]
-            if len(context) > 120:
-                text_prefix = text_prefix + "..."
             log.info(
                 "auto.safe_default.unsafe_context_match",
                 pattern_name=reason,
-                matched_text_prefix=text_prefix,
-                matched_token=matched_token,
+                context_length=len(context),
+                match_start=match.start(),
+                match_end=match.end(),
+                matched_length=match.end() - match.start(),
             )
             return reason
     return None

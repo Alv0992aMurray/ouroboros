@@ -168,31 +168,96 @@ async def test_safe_default_logs_closed_path(tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Test 3: unsafe_context_match logs pattern_name
+# Test 3: unsafe_context_match logs pattern_name and safe metrics
 # ---------------------------------------------------------------------------
 
 
-def test_unsafe_context_match_logs_pattern_name() -> None:
-    """Goal containing 'deploy to production' triggers the unsafe-context gate.
+def test_unsafe_context_match_logs_pattern_name_without_raw_text() -> None:
+    """Unsafe context logs bounded diagnostics without raw user/secret text.
 
     ``_unsafe_context_reason`` must emit ``auto.safe_default.unsafe_context_match``
-    with ``pattern_name == 'ambiguous external side effect'``.
+    with ``pattern_name`` and useful metrics, but must not include raw goal,
+    answer, ledger, or matched-token text.
     """
-    ledger = SeedDraftLedger.from_goal("deploy to production")
+    raw_secret = "sk_live_review_secret_12345"
+    raw_goal = f"Build a local CLI that uses the customer access token {raw_secret}"
+    ledger = SeedDraftLedger.from_goal(raw_goal)
+    ledger.record_qa(
+        "Which credential should the CLI use?",
+        f"Use the access token {raw_secret} from the user.",
+    )
 
     with capture_logs() as captured:
         reason = _unsafe_context_reason(
             ledger,
-            goal="deploy to production",
+            goal=raw_goal,
             pending_question=None,
         )
 
-    assert reason is not None
+    assert reason == "credentials/secrets"
 
-    match_events = [
-        e for e in captured if e["event"] == "auto.safe_default.unsafe_context_match"
+    match_events = [e for e in captured if e["event"] == "auto.safe_default.unsafe_context_match"]
+    assert len(match_events) == 1
+    event = match_events[0]
+    assert event["pattern_name"] == "credentials/secrets"
+    assert event["context_length"] > 0
+    assert event["match_start"] >= 0
+    assert event["match_end"] > event["match_start"]
+    assert event["matched_length"] == event["match_end"] - event["match_start"]
+    assert "context_sha256" not in event
+    assert "match_sha256" not in event
+    assert "matched_token" not in event
+    assert "matched_text_prefix" not in event
+    event_repr = repr(event)
+    assert raw_secret not in event_repr
+    assert raw_goal not in event_repr
+    assert "Which credential should the CLI use?" not in event_repr
+    assert "Use the access token" not in event_repr
+
+
+# ---------------------------------------------------------------------------
+# Test 4: unsafe_context_observed emitted when finalization stays blocked
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_safe_default_logs_unsafe_context_observed_without_raw_text(tmp_path) -> None:
+    """Unsafe finalization emits the blocking event without raw user/secret text."""
+    raw_secret = "prod-token-please-do-not-log"
+    raw_goal = f"Use the customer access token {raw_secret} for a local helper"
+    ledger = SeedDraftLedger.from_goal(raw_goal)
+
+    async def start(goal: str, cwd: str) -> InterviewTurn:  # noqa: ARG001
+        return InterviewTurn("Which token should it use?", "interview_unsafe")
+
+    async def answer(
+        session_id: str, text: str, *, last_question: str | None = None
+    ) -> InterviewTurn:  # noqa: ARG001
+        return InterviewTurn("Which token should it use?", session_id, seed_ready=False)
+
+    state = AutoPipelineState(goal=raw_goal, cwd=str(tmp_path))
+    driver = AutoInterviewDriver(
+        FunctionInterviewBackend(start, answer),
+        store=AutoStore(tmp_path),
+        max_rounds=1,
+        timeout_seconds=1,
+    )
+
+    with capture_logs() as captured:
+        result = await driver.run(state, ledger)
+
+    events = [e["event"] for e in captured]
+    assert "auto.interview.safe_default.entered" in events
+    assert "auto.interview.safe_default.unsafe_context_observed" in events
+
+    unsafe_events = [
+        e for e in captured if e["event"] == "auto.interview.safe_default.unsafe_context_observed"
     ]
-    assert len(match_events) >= 1
-    assert match_events[0]["pattern_name"] == "ambiguous external side effect"
-    assert "matched_token" in match_events[0]
-    assert "matched_text_prefix" in match_events[0]
+    assert len(unsafe_events) == 1
+    assert unsafe_events[0]["unsafe_gaps"]
+    unsafe_event_repr = repr(unsafe_events[0])
+    assert raw_secret not in unsafe_event_repr
+    assert raw_goal not in unsafe_event_repr
+
+    assert result.status == "blocked"
+    assert "without closure" in (result.blocker or "")
