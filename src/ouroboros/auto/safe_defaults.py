@@ -8,6 +8,8 @@ import re
 from typing import TYPE_CHECKING
 import unicodedata
 
+import structlog
+
 from ouroboros.auto.ledger import (
     LedgerEntry,
     LedgerSource,
@@ -19,6 +21,8 @@ from ouroboros.auto.ledger import (
 # Callers that pass ``active_profile`` will have already imported DomainProfile.
 if TYPE_CHECKING:
     from ouroboros.auto.domain_profile import DomainProfile
+
+log = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,7 +344,20 @@ def _unsafe_context_reason(
     ).lower()
     context = _strip_negated_clauses(context)
     for reason, pattern in _UNSAFE_CONTEXT_PATTERNS:
-        if re.search(pattern, context):
+        match = re.search(pattern, context)
+        if match:
+            matched_token = match.group(0)
+            if len(matched_token) > 80:
+                matched_token = matched_token[:80]
+            text_prefix = context[:120]
+            if len(context) > 120:
+                text_prefix = text_prefix + "..."
+            log.info(
+                "auto.safe_default.unsafe_context_match",
+                pattern_name=reason,
+                matched_text_prefix=text_prefix,
+                matched_token=matched_token,
+            )
             return reason
     return None
 
