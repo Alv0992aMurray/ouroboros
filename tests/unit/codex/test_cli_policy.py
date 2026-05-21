@@ -8,6 +8,7 @@ import pytest
 
 from ouroboros.codex.cli_policy import (
     build_codex_child_env,
+    is_wrapper_binary,
     resolve_codex_cli_path,
 )
 
@@ -24,7 +25,7 @@ class _FakeLogger:
 
 
 def _write_wrapper(path: Path) -> Path:
-    path.write_bytes(b"\xcf\xfa\xed\xfe")
+    path.write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 32 + b"zeude codex-wrapper")
     path.chmod(0o755)
     return path
 
@@ -35,7 +36,45 @@ def _write_script(path: Path) -> Path:
     return path
 
 
+class TestIsWrapperBinary:
+    def test_official_rust_macho_codex_is_not_wrapper(self, tmp_path: Path) -> None:
+        """Native OpenAI Codex Rust binaries must not be rejected as wrappers."""
+        codex = tmp_path / "codex"
+        codex.write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 64 + b"OpenAI Codex codex-rs 0.132.0")
+        codex.chmod(0o755)
+
+        assert is_wrapper_binary(str(codex)) is False
+
+    def test_known_compiled_codex_wrapper_is_wrapper(self, tmp_path: Path) -> None:
+        """Compiled candidates still need a wrapper-specific marker to be rejected."""
+        wrapper = _write_wrapper(tmp_path / "codex-wrapper")
+
+        assert is_wrapper_binary(str(wrapper)) is True
+
+
 class TestResolveCodexCliPath:
+    def test_keeps_official_rust_codex_without_wrapper_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Mach-O/ELF Codex Rust binaries should resolve as real CLI targets."""
+        codex = tmp_path / "codex"
+        codex.write_bytes(b"\xcf\xfa\xed\xfe" + b"\0" * 64 + b"OpenAI Codex codex-rs 0.132.0")
+        codex.chmod(0o755)
+        logger = _FakeLogger()
+
+        monkeypatch.setenv("PATH", str(tmp_path))
+
+        resolution = resolve_codex_cli_path(
+            explicit_cli_path=None,
+            configured_cli_path=None,
+            logger=logger,
+            log_namespace="codex_cli_runtime",
+        )
+
+        assert resolution.cli_path == str(codex)
+        assert resolution.wrapper_path is None
+        assert logger.events == []
+
     def test_falls_back_from_wrapper_to_real_cli(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -64,7 +103,7 @@ class TestResolveCodexCliPath:
                 "codex_cli_adapter.cli_wrapper_detected",
                 {
                     "wrapper_path": str(wrapper),
-                    "hint": "Searching PATH for the real Node.js codex CLI.",
+                    "hint": "Searching PATH for the real Codex CLI.",
                 },
             ),
             (
