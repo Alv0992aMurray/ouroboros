@@ -48,28 +48,57 @@ def _write_script(path: Path) -> Path:
 
 
 class TestIsWrapperBinary:
-    @pytest.mark.parametrize("magic", [MACHO_64_MAGIC, ELF_MAGIC])
-    def test_official_rust_codex_is_not_wrapper(self, tmp_path: Path, magic: bytes) -> None:
-        """Native OpenAI Codex Rust binaries must not be rejected as wrappers."""
-        codex = _write_official_rust_codex(tmp_path / "codex", magic=magic)
+    def test_official_rust_macho_codex_is_not_wrapper(self, tmp_path: Path) -> None:
+        """Native macOS OpenAI Codex Rust binaries must not be rejected as wrappers."""
+        codex = _write_official_rust_codex(tmp_path / "codex", magic=MACHO_64_MAGIC)
 
         assert is_wrapper_binary(str(codex)) is False
 
-    @pytest.mark.parametrize("magic", [MACHO_64_MAGIC, ELF_MAGIC])
-    def test_known_compiled_codex_wrapper_is_wrapper(self, tmp_path: Path, magic: bytes) -> None:
+    def test_official_rust_elf_codex_is_not_wrapper(self, tmp_path: Path) -> None:
+        """Native Linux OpenAI Codex Rust binaries must not be rejected as wrappers."""
+        codex = _write_official_rust_codex(tmp_path / "codex", magic=ELF_MAGIC)
+
+        assert is_wrapper_binary(str(codex)) is False
+
+    def test_known_compiled_macho_codex_wrapper_is_wrapper(self, tmp_path: Path) -> None:
         """Compiled candidates still need a wrapper-specific marker to be rejected."""
-        wrapper = _write_wrapper(tmp_path / "codex-wrapper", magic=magic)
+        wrapper = _write_wrapper(tmp_path / "codex-wrapper", magic=MACHO_64_MAGIC)
+
+        assert is_wrapper_binary(str(wrapper)) is True
+
+    def test_known_compiled_elf_codex_wrapper_is_wrapper(self, tmp_path: Path) -> None:
+        """Linux compiled candidates also need a wrapper marker to be rejected."""
+        wrapper = _write_wrapper(tmp_path / "codex-wrapper", magic=ELF_MAGIC)
 
         assert is_wrapper_binary(str(wrapper)) is True
 
 
 class TestResolveCodexCliPath:
-    @pytest.mark.parametrize("magic", [MACHO_64_MAGIC, ELF_MAGIC])
-    def test_keeps_official_rust_codex_without_wrapper_warning(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, magic: bytes
+    def test_keeps_official_rust_macho_codex_without_wrapper_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Mach-O/ELF Codex Rust binaries should resolve as real CLI targets."""
-        codex = _write_official_rust_codex(tmp_path / "codex", magic=magic)
+        """macOS Codex Rust binaries should resolve as real CLI targets."""
+        codex = _write_official_rust_codex(tmp_path / "codex", magic=MACHO_64_MAGIC)
+        logger = _FakeLogger()
+
+        monkeypatch.setenv("PATH", str(tmp_path))
+
+        resolution = resolve_codex_cli_path(
+            explicit_cli_path=None,
+            configured_cli_path=None,
+            logger=logger,
+            log_namespace="codex_cli_runtime",
+        )
+
+        assert resolution.cli_path == str(codex)
+        assert resolution.wrapper_path is None
+        assert logger.events == []
+
+    def test_keeps_official_rust_elf_codex_without_wrapper_warning(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Linux Codex Rust binaries should resolve as real CLI targets."""
+        codex = _write_official_rust_codex(tmp_path / "codex", magic=ELF_MAGIC)
         logger = _FakeLogger()
 
         monkeypatch.setenv("PATH", str(tmp_path))
