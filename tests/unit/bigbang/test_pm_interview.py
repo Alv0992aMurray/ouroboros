@@ -1026,6 +1026,60 @@ class TestPMSeedGeneration:
         assert seed.interview_id == "test_001"
 
     @pytest.mark.asyncio
+    async def test_uncertain_answer_is_preserved_as_assumption_and_decide_later(
+        self, tmp_path: Path
+    ) -> None:
+        """Uncertain PM answers can be recorded without becoming confirmed requirements."""
+        adapter = _make_adapter()
+        engine = _make_engine(adapter, tmp_path)
+
+        extraction_response = json.dumps(
+            {
+                "product_name": "StakeholderFlow",
+                "goal": "Capture product direction without fake certainty",
+                "user_stories": [],
+                "constraints": [],
+                "success_criteria": [],
+                "decide_later_items": ["Stakeholder needs to decide the launch metric"],
+                "assumptions": [
+                    "Team currently assumes weekly active use is the likely success signal"
+                ],
+            }
+        )
+        adapter.complete = AsyncMock(return_value=Result.ok(_mock_completion(extraction_response)))
+
+        state = InterviewState(
+            interview_id="test_uncertain",
+            initial_context="Plan a stakeholder-dependent product",
+            status=InterviewStatus.COMPLETED,
+            rounds=[
+                InterviewRound(
+                    round_number=1,
+                    question="What success metric proves adoption?",
+                    user_response=(
+                        "I don't know yet; a stakeholder needs to decide. "
+                        "For now, assume weekly active use might be the signal."
+                    ),
+                ),
+            ],
+        )
+
+        result = await engine.generate_pm_seed(state)
+
+        assert result.is_ok
+        seed = result.value
+        assert seed.user_stories == ()
+        assert seed.decide_later_items == ("Stakeholder needs to decide the launch metric",)
+        assert seed.assumptions == (
+            "Team currently assumes weekly active use is the likely success signal",
+        )
+
+        messages = adapter.complete.await_args.args[0]
+        assert messages[0].content == _EXTRACTION_SYSTEM_PROMPT
+        assert "turn uncertain, stakeholder-dependent" in messages[0].content
+        assert "I don't know yet; a stakeholder needs to decide" in messages[1].content
+
+    @pytest.mark.asyncio
     async def test_includes_deferred_items_in_decide_later(self, tmp_path: Path) -> None:
         """LLM-extracted deferred items are merged into decide_later_items on PMSeed."""
         adapter = _make_adapter()

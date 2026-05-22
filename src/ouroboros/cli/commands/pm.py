@@ -494,7 +494,8 @@ async def _run_pm_interview(
 
         print_success(f"Resumed session: {resume_id}")
     else:
-        # New session — ask the opening question first
+        # New session — show uncertainty guidance before the first PM answer
+        print_info(PM_UNCERTAINTY_GUIDANCE)
         opening = engine.get_opening_question()
         console.print(f"\n[bold yellow]?[/] {opening}\n")
 
@@ -514,7 +515,6 @@ async def _run_pm_interview(
             raise typer.Exit(code=1)
         state = state_result.value
         print_success(f"Interview started (session: {state.interview_id})")
-        print_info(PM_UNCERTAINTY_GUIDANCE)
 
         # Save pm_meta so --resume can find it later
         _save_cli_pm_meta(state.interview_id, engine)
