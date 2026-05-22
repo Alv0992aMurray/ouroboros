@@ -56,9 +56,7 @@ class TestIsWrapperBinary:
         assert is_wrapper_binary(str(codex)) is False
 
     @pytest.mark.parametrize("magic", [MACHO_64_MAGIC, ELF_MAGIC])
-    def test_known_compiled_codex_wrapper_is_wrapper(
-        self, tmp_path: Path, magic: bytes
-    ) -> None:
+    def test_known_compiled_codex_wrapper_is_wrapper(self, tmp_path: Path, magic: bytes) -> None:
         """Compiled candidates still need a wrapper-specific marker to be rejected."""
         wrapper = _write_wrapper(tmp_path / "codex-wrapper", magic=magic)
 
