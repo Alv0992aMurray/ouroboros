@@ -41,11 +41,13 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - CLEANUP=true
-      - INTERVAL=300
+      - INTERVAL=600
       - LOG_LEVEL=info
       - SELF_UPDATE=true
       - NOTIFIERS=
 ```
+
+> **Personal note:** I changed `INTERVAL` to `600` (10 minutes) in the example above. The default 5-minute polling felt too aggressive for my home setup and was generating unnecessary registry traffic.
 
 ## Configuration
 
@@ -79,44 +81,4 @@ Available metrics:
 
 ## Notifications
 
-Ouroboros uses [Apprise](https://github.com/caronc/apprise) for notifications. Set the `NOTIFIERS` environment variable to a space-separated list of Apprise-compatible URLs.
-
-```bash
-# Slack
-NOTIFIERS=slack://tokenA/tokenB/tokenC
-
-# Discord
-NOTIFIERS=discord://webhook_id/webhook_token
-
-# Multiple
-NOTIFIERS="slack://... discord://..."
-```
-
-## Development
-
-### Prerequisites
-
-- Python 3.8+
-- Docker
-
-### Setup
-
-```bash
-git clone https://github.com/pyouroboros/ouroboros.git
-cd ouroboros
-pip install -r requirements.txt
-cp .env.example .env
-# Edit .env with your settings
-python -m ouroboros
-```
-
-### Running Tests
-
-```bash
-pip install -r requirements-dev.txt
-pytest tests/
-```
-
-## License
-
-MIT — see [LICENSE](LICENSE) for details.
+Ouroboros uses [Apprise](https://github.com/caronc/apprise) for notifications. Set the `NOTIFIERS` envi
